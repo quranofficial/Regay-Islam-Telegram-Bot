@@ -1,0 +1,147 @@
+"""Persistent user storage backed by the Supabase REST API.
+
+The service-role key is used only by the private Telegram bot process.
+Never ship it to a client application or expose it in logs.
+"""
+from __future__ import annotations
+
+import json
+import os
+import urllib.error
+import urllib.parse
+import urllib.request
+
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+
+
+def is_configured() -> bool:
+    return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
+
+
+def _request(method: str, path: str, *, params=None, payload=None, prefer=None):
+    if not is_configured():
+        raise RuntimeError(
+            "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be configured."
+        )
+    url = f"{SUPABASE_URL}/rest/v1/{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params, doseq=True)
+    data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Accept": "application/json",
+    }
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    if prefer:
+        headers["Prefer"] = prefer
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read()
+            if not raw:
+                return None
+            return json.loads(raw.decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"Supabase request failed ({exc.code}): {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Supabase connection failed: {exc.reason}") from exc
+
+
+def _upsert(table: str, row: dict):
+    return _request(
+        "POST", table, params={"on_conflict": "user_id"}, payload=row,
+        prefer="resolution=merge-duplicates,return=minimal",
+    )
+
+
+def save_user(uid: int, name: str, username: str):
+    _upsert("bot_users", {
+        "user_id": uid, "name": name or "", "username": username or ""
+    })
+
+
+def get_city(uid: int):
+    rows = _request(
+        "GET", "bot_users",
+        params={"select": "city", "user_id": f"eq.{uid}", "limit": "1"},
+    ) or []
+    return rows[0].get("city") if rows else None
+
+
+def set_city(uid: int, city: str):
+    _upsert("bot_users", {"user_id": uid, "city": city})
+
+
+def init_user_features():
+    # Tables are provisioned once in Supabase; never create them at runtime.
+    return None
+
+
+def save_last_read(uid: int, sid: int, offset: int):
+    _request(
+        "POST", "bot_last_read", params={"on_conflict": "user_id"},
+        payload={"user_id": uid, "surah_id": sid, "ayah_offset": offset},
+        prefer="resolution=merge-duplicates,return=minimal",
+    )
+
+
+def add_favorite(uid: int, sid: int, ayah: int, title: str) -> bool:
+    rows = _request(
+        "POST", "bot_favorites",
+        params={"on_conflict": "user_id,surah_id,ayah"},
+        payload={"user_id": uid, "surah_id": sid, "ayah": ayah, "title": title},
+        prefer="resolution=ignore-duplicates,return=representation",
+    )
+    return bool(rows)
+
+
+def remove_favorite(uid: int, favorite_id: int):
+    _request(
+        "DELETE", "bot_favorites",
+        params={"id": f"eq.{favorite_id}", "user_id": f"eq.{uid}"},
+        prefer="return=minimal",
+    )
+
+
+def list_favorites(uid: int):
+    rows = _request(
+        "GET", "bot_favorites",
+        params={
+            "select": "id,surah_id,ayah,title", "user_id": f"eq.{uid}",
+            "order": "id.desc", "limit": "30",
+        },
+    ) or []
+    return [(r["id"], r["surah_id"], r["ayah"], r["title"]) for r in rows]
+
+
+def get_last_read(uid: int):
+    rows = _request(
+        "GET", "bot_last_read",
+        params={"select": "surah_id,ayah_offset", "user_id": f"eq.{uid}", "limit": "1"},
+    ) or []
+    return (rows[0]["surah_id"], rows[0]["ayah_offset"]) if rows else None
+
+
+def get_tasbih(uid: int):
+    rows = _request(
+        "GET", "bot_users",
+        params={"select": "tasbih", "user_id": f"eq.{uid}", "limit": "1"},
+    ) or []
+    return (rows[0]["tasbih"],) if rows else None
+
+
+def change_tasbih(uid: int, change: int) -> int:
+    result = _request(
+        "POST", "rpc/bot_change_tasbih",
+        payload={"p_user_id": uid, "p_change": change},
+    )
+    return int(result or 0)
+
+
+def get_user_count() -> int:
+    result = _request("POST", "rpc/bot_user_count", payload={})
+    return int(result or 0)
