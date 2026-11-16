@@ -151,7 +151,7 @@ def remove_favorite(uid, favorite_id):
     with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
         c.execute("DELETE FROM favorites WHERE id=? AND user_id=?", (favorite_id, uid))
 
-async def show_favorites(update):
+async def show_favorites(update, context=None):
     init_user_features()
     uid = update.effective_user.id
     with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
@@ -171,7 +171,7 @@ async def show_favorites(update):
         f"⭐ *دڵخوازەکانت*\\n{len(rows)} ئایەت — بۆ کردنەوە ناوی ئایەتەکە هەڵبژێرە.",
         reply_markup=ik(buttons), parse_mode=ParseMode.MARKDOWN)
 
-async def show_last_read(update):
+async def show_last_read(update, context=None):
     init_user_features()
     with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
         row = c.execute("SELECT surah_id,ayah_offset FROM last_read WHERE user_id=?",
@@ -181,7 +181,7 @@ async def show_last_read(update):
             "📍 هێشتا شوێنی خوێندنەوەیەکت تۆمار نەکراوە. سوڕەتێک بکەرەوە و خوێندنەوەت دەست پێ بکە.")
     await show_ayahs(update, int(row[0]), int(row[1]))
 
-async def show_settings(update):
+async def show_settings(update, context=None):
     uid = update.effective_user.id
     city = get_city(uid)
     city_label = city or "دیاری نەکراوە"
