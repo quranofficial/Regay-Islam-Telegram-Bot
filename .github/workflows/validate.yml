@@ -18,6 +18,6 @@ jobs:
         with:
           python-version: '3.11'
       - name: Check Python syntax
-        run: python -m py_compile bot.py scripts_check_data.py
+        run: python -m py_compile bot.py supabase_store.py scripts_check_data.py
       - name: Validate bundled data
         run: python scripts_check_data.py
