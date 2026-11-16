@@ -67,7 +67,8 @@ def main_keyboard():
         [KeyboardButton("🌙 ڕەمەزان"), KeyboardButton("✨ ناوەکانی خودا")],
         [KeyboardButton("🧠 تاقیکردنەوە"), KeyboardButton("🎙️ قارییەکان")],
         [KeyboardButton("🔎 گەڕان"), KeyboardButton("📚 هەموو بابەتەکان")],
-        [KeyboardButton("ℹ️ دەربارەی بۆت")]
+        [KeyboardButton("⭐ دڵخوازەکان"), KeyboardButton("📍 دوا خوێندنەوە")],
+        [KeyboardButton("⚙️ ڕێکخستن"), KeyboardButton("ℹ️ دەربارەی بۆت")]
     ], resize_keyboard=True, is_persistent=True)
 
 def ik(rows):
@@ -111,6 +112,90 @@ def set_city(uid, city):
         c.execute("CREATE TABLE IF NOT EXISTS users(user_id INTEGER PRIMARY KEY, name TEXT, username TEXT, city TEXT, tasbih INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
         c.execute("INSERT INTO users(user_id,city) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET city=excluded.city",(uid,city))
 
+
+
+def init_user_features():
+    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS favorites(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            surah_id INTEGER NOT NULL,
+            ayah INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, surah_id, ayah)
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS last_read(
+            user_id INTEGER PRIMARY KEY,
+            surah_id INTEGER NOT NULL,
+            ayah_offset INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+
+def save_last_read(uid, sid, offset):
+    init_user_features()
+    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
+        c.execute("""INSERT INTO last_read(user_id,surah_id,ayah_offset) VALUES(?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET surah_id=excluded.surah_id,
+            ayah_offset=excluded.ayah_offset, updated_at=CURRENT_TIMESTAMP""",
+            (uid, sid, offset))
+
+def add_favorite(uid, sid, ayah, title):
+    init_user_features()
+    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
+        cur = c.execute("INSERT OR IGNORE INTO favorites(user_id,surah_id,ayah,title) VALUES(?,?,?,?)",
+                        (uid, sid, ayah, title))
+        return cur.rowcount > 0
+
+def remove_favorite(uid, favorite_id):
+    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
+        c.execute("DELETE FROM favorites WHERE id=? AND user_id=?", (favorite_id, uid))
+
+async def show_favorites(update):
+    init_user_features()
+    uid = update.effective_user.id
+    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
+        rows = c.execute("SELECT id,surah_id,ayah,title FROM favorites WHERE user_id=? ORDER BY id DESC LIMIT 30",
+                         (uid,)).fetchall()
+    if not rows:
+        return await update.effective_message.reply_text(
+            "⭐ هێشتا هیچ ئایەتێکت زیاد نەکردووە بۆ دڵخوازەکان.",
+            reply_markup=ik([[InlineKeyboardButton("📖 کردنەوەی قورئان", callback_data="q:s:0")]]))
+    buttons = []
+    for fid, sid, ayah, title in rows:
+        buttons.append([
+            InlineKeyboardButton(f"⭐ {title}"[:58], callback_data=f"fv:open:{sid}:{ayah}"),
+            InlineKeyboardButton("🗑", callback_data=f"fv:del:{fid}")
+        ])
+    await update.effective_message.reply_text(
+        f"⭐ *دڵخوازەکانت*\\n{len(rows)} ئایەت — بۆ کردنەوە ناوی ئایەتەکە هەڵبژێرە.",
+        reply_markup=ik(buttons), parse_mode=ParseMode.MARKDOWN)
+
+async def show_last_read(update):
+    init_user_features()
+    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
+        row = c.execute("SELECT surah_id,ayah_offset FROM last_read WHERE user_id=?",
+                        (update.effective_user.id,)).fetchone()
+    if not row:
+        return await update.effective_message.reply_text(
+            "📍 هێشتا شوێنی خوێندنەوەیەکت تۆمار نەکراوە. سوڕەتێک بکەرەوە و خوێندنەوەت دەست پێ بکە.")
+    await show_ayahs(update, int(row[0]), int(row[1]))
+
+async def show_settings(update):
+    uid = update.effective_user.id
+    city = get_city(uid)
+    city_label = city or "دیاری نەکراوە"
+    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
+        row = c.execute("SELECT tasbih FROM users WHERE user_id=?", (uid,)).fetchone()
+    tasbih_count = row[0] if row else 0
+    await update.effective_message.reply_text(
+        f"⚙️ *ڕێکخستنەکانی من*\\n\\n🏙 شاری هەڵبژێردراو: {city_label}\\n📿 ژمارەی تەسبیح: {tasbih_count}\\n\\nدەتوانیت شاری خۆت بگۆڕیت؛ ئەو شارە بۆ کاتەکانی بانگ و قیبلە بەکاردێت.",
+        reply_markup=ik([
+            [InlineKeyboardButton("🏙 گۆڕینی شار", callback_data="st:city")],
+            [InlineKeyboardButton("⭐ دڵخوازەکان", callback_data="fv:list")],
+            [InlineKeyboardButton("📍 دوا خوێندنەوە", callback_data="lr")]
+        ]), parse_mode=ParseMode.MARKDOWN)
+
 def get_cities():
     # The Android app keeps Kurdish display names in cityme.json and table IDs in the prayer DB.
     mapping={x.get("Name"):x.get("id") for x in load_json("cityme") if isinstance(x,dict)}
@@ -135,6 +220,7 @@ async def show_suras(update, page=0, edit=False):
     else: await update.effective_message.reply_text(text,reply_markup=markup,parse_mode=ParseMode.MARKDOWN)
 
 async def show_ayahs(update, sid, offset=0, edit=False):
+    save_last_read(update.effective_user.id, sid, offset)
     with db("regayislam.db") as c:
         rows=c.execute("SELECT sura_name_ar,ayah,text,rebar,raman,puxta,asan,sanahi,hazhar,zhin,maiser,roshn,tawhid FROM ayah_text WHERE suraId=? ORDER BY ayah LIMIT 8 OFFSET ?",(sid,offset)).fetchall()
     if not rows:
@@ -148,7 +234,7 @@ async def show_ayahs(update, sid, offset=0, edit=False):
     for row in rows:
         _,ayah,arabic,*_=row
         parts.append(f"*{ayah}.* {arabic}")
-        buttons.append([InlineKeyboardButton(f"ڕوونکردنەوەی ئایەتی {ayah}",callback_data=f"q:t:{sid}:{ayah}")])
+        buttons.append([InlineKeyboardButton(f"📖 ڕوونکردنەوەی ئایەتی {ayah}",callback_data=f"q:t:{sid}:{ayah}"), InlineKeyboardButton("⭐",callback_data=f"fv:add:{sid}:{ayah}")])
     nav=[]
     if offset>0: nav.append(InlineKeyboardButton("⬅️ پێشوو",callback_data=f"q:a:{sid}:{max(0,offset-8)}"))
     with db("surat.db") as c: total=c.execute("SELECT aya FROM surat WHERE soraid=?",(sid,)).fetchone()[0]
@@ -160,6 +246,7 @@ async def show_ayahs(update, sid, offset=0, edit=False):
     else: await update.effective_message.reply_text(text,reply_markup=ik(buttons),parse_mode=ParseMode.MARKDOWN)
 
 async def show_tafsir(update,sid,ayah):
+    save_last_read(update.effective_user.id, sid, ((ayah-1)//8)*8)
     with db("regayislam.db") as c:
         r=c.execute("SELECT sura_name_ar,text,rebar,raman,puxta,asan,sanahi,hazhar,zhin,maiser,roshn,tawhid FROM ayah_text WHERE suraId=? AND ayah=?",(sid,ayah)).fetchone()
     if not r: return await update.callback_query.answer("ئایەت نەدۆزرایەوە",show_alert=True)
@@ -168,7 +255,7 @@ async def show_tafsir(update,sid,ayah):
     text=f"📖 {r[0]} — ئایەتی {ayah}\n\n{r[1]}\n"
     for label,value in zip(labels,fields):
         if value and str(value).strip(): text+=f"\n{label}:\n{str(value)[:2500]}\n"
-    await update.effective_message.reply_text(text[:3900],reply_markup=ik([[InlineKeyboardButton("🔙 گەڕانەوە بۆ ئایەتەکان",callback_data=f"q:a:{sid}:{((ayah-1)//8)*8}")]]),disable_web_page_preview=True)
+    await update.effective_message.reply_text(text[:3900],reply_markup=ik([[InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان",callback_data=f"fv:add:{sid}:{ayah}")],[InlineKeyboardButton("🔙 گەڕانەوە بۆ ئایەتەکان",callback_data=f"q:a:{sid}:{((ayah-1)//8)*8}")]]),disable_web_page_preview=True)
 
 async def prayer_city_list(update, page=0, edit=False, mode="prayer"):
     cities=get_cities(); chunk=cities[page*12:(page+1)*12]
@@ -456,6 +543,9 @@ async def handle_text(update,context):
         "🎙️ قارییەکان":lambda:json_list(update,"dangakan",0),
         "📚 هەموو بابەتەکان":lambda:content_menu(update),
         "🔎 گەڕان":lambda:search_choose(update),
+        "⭐ دڵخوازەکان":lambda:show_favorites(update),
+        "📍 دوا خوێندنەوە":lambda:show_last_read(update),
+        "⚙️ ڕێکخستن":lambda:show_settings(update),
         "ℹ️ دەربارەی بۆت":lambda:about(update),
     }
     fn=mapping.get(text)
@@ -476,6 +566,23 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     data=q.data or ""
     try:
+        if data == "lr": return await show_last_read(update)
+        if data == "settings": return await show_settings(update)
+        if data == "fv:list": return await show_favorites(update)
+        if data == "st:city": return await prayer_city_list(update, mode="prayer")
+        if data.startswith("fv:add:"):
+            _, _, sid, ayah = data.split(":")
+            with db("regayislam.db") as c:
+                name = c.execute("SELECT sura_name_ar FROM ayah_text WHERE suraId=? AND ayah=?", (int(sid), int(ayah))).fetchone()
+            title = f"{name[0] if name else 'قورئان'} — ئایەتی {ayah}"
+            added = add_favorite(q.from_user.id, int(sid), int(ayah), title)
+            return await q.message.reply_text("⭐ ئایەتەکە زیاد کرا بۆ دڵخوازەکان." if added else "ئەم ئایەتە پێشتر لە دڵخوازەکانتدا هەیە.")
+        if data.startswith("fv:open:"):
+            _, _, sid, ayah = data.split(":")
+            return await show_tafsir(update, int(sid), int(ayah))
+        if data.startswith("fv:del:"):
+            remove_favorite(q.from_user.id, int(data.split(":")[2]))
+            return await show_favorites(update)
         if data.startswith("q:s:"): return await show_suras(update,int(data.split(":")[2]),True)
         if data.startswith("q:a:"):
             _,_,sid,off=data.split(":"); return await show_ayahs(update,int(sid),int(off),True)
@@ -538,7 +645,8 @@ async def post_init(app):
     await app.bot.set_my_commands([
         BotCommand("start","دەستپێکردن"), BotCommand("menu","مێنیوی سەرەکی"),
         BotCommand("search","گەڕان لە ناوەڕۆک"), BotCommand("quran","قورئان"),
-        BotCommand("prayer","کاتەکانی بانگ"), BotCommand("help","یارمەتی")
+        BotCommand("prayer","کاتەکانی بانگ"), BotCommand("favorites","دڵخوازەکان"),
+        BotCommand("lastread","دوا خوێندنەوە"), BotCommand("settings","ڕێکخستن"), BotCommand("help","یارمەتی")
     ])
 
 async def menu_cmd(update,context): await start(update,context)
@@ -548,14 +656,16 @@ async def prayer_cmd(update,context):
     if city: await prayer_times(update,city)
     else: await prayer_city_list(update)
 async def help_cmd(update,context):
-    await update.effective_message.reply_text("/start — دەستپێکردن\n/menu — مێنیوی سەرەکی\n/quran — قورئان\n/prayer — کاتەکانی بانگ\n/search — گەڕان\n\nهەموو دوگمەکان لە مێنیوی سەرەکی بەردەستن.",reply_markup=main_keyboard())
+    await update.effective_message.reply_text("/start — دەستپێکردن\n/menu — مێنیوی سەرەکی\n/quran — قورئان\n/prayer — کاتەکانی بانگ\n/favorites — دڵخوازەکان\n/lastread — دوا خوێندنەوە\n/settings — ڕێکخستن\n/search — گەڕان\n\nهەموو دوگمەکان لە مێنیوی سەرەکی بەردەستن.",reply_markup=main_keyboard())
 
 def main():
+    init_user_features()
     if not TOKEN:
         raise SystemExit("BOT_TOKEN environment variable is required. Copy .env.example to .env and set your Telegram bot token.")
     app=Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("menu",menu_cmd)); app.add_handler(CommandHandler("help",help_cmd))
     app.add_handler(CommandHandler("quran",quran_cmd)); app.add_handler(CommandHandler("prayer",prayer_cmd)); app.add_handler(CommandHandler("search",cmd_search)); app.add_handler(CommandHandler("admin",cmd_admin))
+    app.add_handler(CommandHandler("favorites",show_favorites)); app.add_handler(CommandHandler("lastread",show_last_read)); app.add_handler(CommandHandler("settings",show_settings))
     app.add_handler(CallbackQueryHandler(callback)); app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text)); app.add_error_handler(error_handler)
     log.info("ڕێگای ئیسلام bot starting")
     app.run_polling(allowed_updates=Update.ALL_TYPES,drop_pending_updates=False)
