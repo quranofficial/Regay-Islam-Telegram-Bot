@@ -310,24 +310,68 @@ async def qibla(update, city=None):
     cardinal=dirs[round(bearing/90)%4]
     await update.effective_message.reply_text(f"🧭 *ئاراستەی قیبلە — {n[0]}*\n\nئاراستەی قیبلە: *{bearing:.1f}°* لە باكووری ڕاستەقینەوە\nئاراستەی گشتی: *{cardinal}*\n\n_ئەم ژمارەیە لە کۆئۆردیناتی شاری هەڵبژێردراوەوە هەژمار کراوە؛ بۆ وردی زیاتر لەسەر شوێنی خۆت پێویستە GPS بەکاربهێنیت._",parse_mode=ParseMode.MARKDOWN,reply_markup=ik([[InlineKeyboardButton("گۆڕینی شار",callback_data="pcl:qibla:0")]]))
 
-async def show_json_item(update,key,index,edit=False):
+async def send_asset_file(update, context, item):
+    """Download a media asset and send it as a Telegram file, never as a URL."""
+    url = str(item.get("link") or item.get("url") or "").strip()
+    if not url.startswith(("https://", "http://")):
+        await update.effective_message.reply_text("⚠️ لینکی دروستی بۆ ئەم فایلە بەردەست نییە.")
+        return False
+    filename = str(item.get("namefile") or url.split("?", 1)[0].rsplit("/", 1)[-1] or "file").strip()
+    suffix = Path(filename).suffix.lower()
+    title = str(item.get("title") or item.get("name") or filename).strip()
+    try:
+        def download_asset():
+            request = urllib.request.Request(url, headers={"User-Agent": "Regay-Islam-Telegram-Bot/1.0"})
+            with urllib.request.urlopen(request, timeout=60) as response:
+                payload = response.read(50 * 1024 * 1024 + 1)
+            if not payload or len(payload) > 50 * 1024 * 1024:
+                raise ValueError("Empty asset or asset exceeds Telegram bot upload limit")
+            return payload
+        payload = await asyncio.to_thread(download_asset)
+        stream = io.BytesIO(payload)
+        stream.name = filename
+        chat_id = update.effective_chat.id
+        if suffix in (".mp3", ".m4a", ".wav", ".ogg", ".flac"):
+            await context.bot.send_audio(chat_id=chat_id, audio=stream, caption=title[:1024], title=title[:64])
+        elif suffix in (".mp4", ".mov", ".m4v"):
+            await context.bot.send_video(chat_id=chat_id, video=stream, caption=title[:1024])
+        elif suffix in (".jpg", ".jpeg", ".png", ".webp"):
+            await context.bot.send_photo(chat_id=chat_id, photo=stream, caption=title[:1024])
+        else:
+            await context.bot.send_document(chat_id=chat_id, document=stream, caption=title[:1024], filename=filename)
+        return True
+    except Exception:
+        log.exception("Could not download/send asset: %s", filename)
+        await update.effective_message.reply_text("⚠️ ناردنی فایلەکە سەرکەوتوو نەبوو. تکایە دواتر دووبارە هەوڵ بدە.")
+        return False
+
+
+async def show_json_item(update,context,key,index,edit=False):
     data=load_json(key)
     if not data: return await update.effective_message.reply_text("ناوەڕۆک بەردەست نییە.")
     index=max(0,min(index,len(data)-1)); item=data[index]
     if isinstance(item,dict):
         title=item.get('title') or item.get('name') or item.get('name_ar') or f"{JSON_FILES[key][0]} — {index+1}"
+        asset_url=item.get('link') or item.get('url')
+        asset_name=str(item.get('namefile') or asset_url or '').split('?',1)[0].lower()
+        is_asset=str(item.get('type') or '').upper()=='ASSET' or (asset_url and Path(asset_name).suffix.lower() in {'.mp3','.m4a','.wav','.ogg','.flac','.mp4','.mov','.m4v','.pdf','.doc','.docx','.xls','.xlsx','.ppt','.pptx','.jpg','.jpeg','.png','.webp'})
+        if is_asset:
+            await send_asset_file(update,context,item)
+            nav=[]
+            if index>0: nav.append(InlineKeyboardButton("⬅️ پێشوو",callback_data=f"j:{key}:{index-1}"))
+            if index+1<len(data): nav.append(InlineKeyboardButton("دواتر ➡️",callback_data=f"j:{key}:{index+1}"))
+            rows=[nav] if nav else []
+            rows.append([InlineKeyboardButton("🔙 لیستی بابەتەکان",callback_data=f"jl:{key}:0")])
+            await update.effective_message.reply_text(f"📎 {title}",reply_markup=ik(rows))
+            return
         body=item.get('text') or item.get('desc') or item.get('wata') or item.get('du3a') or item.get('tag') or ""
         extras=[]
         for k,v in item.items():
             if k not in {'title','name','name_ar','text','desc','wata','du3a','_id','id','sc','tag','url','link','namefile'} and v not in (None,''):
                 extras.append(f"{k}: {v}")
-        if item.get('sc'): extras.append(str(item['sc']))
-        if item.get('url'): extras.append(str(item['url']))
-        if item.get('link'): extras.append(str(item['link']))
-        if item.get('namefile'): extras.append(str(item['namefile']))
-        text=f"*{title}*\n\n{body}"
-        if extras: text+='\n\n'+'\n'.join(extras)
-    else: text=f"*{JSON_FILES[key][0]}*\n\n{item}"
+        text=f"*{title}*\\n\\n{body}"
+        if extras: text+='\\n\\n'+'\\n'.join(extras)
+    else: text=f"*{JSON_FILES[key][0]}*\\n\\n{item}"
     nav=[]
     if index>0: nav.append(InlineKeyboardButton("⬅️ پێشوو",callback_data=f"j:{key}:{index-1}"))
     if index+1<len(data): nav.append(InlineKeyboardButton("دواتر ➡️",callback_data=f"j:{key}:{index+1}"))
@@ -403,7 +447,7 @@ async def play_qari_surah(update,context,index,sid):
         await context.bot.send_audio(chat_id=update.effective_chat.id,audio=audio_file,title=f"{surah_name} — {qari_name}"[:64],performer=qari_name[:64],caption=f"📖 سوڕەتی {surah_name}\n🎙️ قاری: {qari_name}")
     except Exception:
         log.exception("Could not download or send recitation audio: %s",audio_url)
-        await update.effective_message.reply_text(f"🎧 ناردنی ڕاستەوخۆی دەنگ سەرکەوتوو نەبوو. دەتوانیت لەم لینکەوە بیبیستیت:\n{audio_url}",reply_markup=ik([[InlineKeyboardButton("▶️ گوێگرتن لە دەنگ",url=audio_url)],[InlineKeyboardButton("🔙 گەڕانەوە بۆ سوڕەتەکان",callback_data=f"qr:pick:{index}")]]),disable_web_page_preview=True)
+        await update.effective_message.reply_text("⚠️ ناردنی فایلەکە سەرکەوتوو نەبوو. تکایە دواتر دووبارە هەوڵ بدە.",reply_markup=ik([[InlineKeyboardButton("🔙 گەڕانەوە بۆ سوڕەتەکان",callback_data=f"qr:pick:{index}")]]))
 
 async def content_menu(update):
     rows=[]
@@ -656,7 +700,7 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         if data.startswith("qc:"):
             city=data[3:]; set_city(q.from_user.id,city); return await qibla(update,city)
         if data.startswith("j:"):
-            _,key,index=data.split(":"); return await show_json_item(update,key,int(index),True)
+            _,key,index=data.split(":"); return await show_json_item(update,context,key,int(index),True)
         if data.startswith("jl:"):
             _,key,page=data.split(":"); return await json_list(update,key,int(page),True)
         if data.startswith("nm:"): return await show_names(update,int(data.split(":")[1]))
