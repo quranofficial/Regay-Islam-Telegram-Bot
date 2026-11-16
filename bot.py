@@ -351,6 +351,48 @@ async def json_list(update,key,page=0,edit=False):
     if edit: await update.callback_query.edit_message_text(text,reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
     else: await update.effective_message.reply_text(text,reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
 
+async def show_qari_menu(update,page=0,edit=False):
+    reciters=[r for r in load_json("dangakan") if isinstance(r,dict) and str(r.get("doxx"," ")).lower()=="true" and r.get("url")]
+    start=page*10
+    rows=[]
+    for i,item in enumerate(reciters[start:start+10],start=start):
+        label=str(item.get("name_ar") or f"قاری {i+1}").strip()
+        rows.append([InlineKeyboardButton(label[:58],callback_data=f"qr:pick:{i}")])
+    nav=[]
+    if page: nav.append(InlineKeyboardButton("⬅️ پێشوو",callback_data=f"qr:list:{page-1}"))
+    if start+10<len(reciters): nav.append(InlineKeyboardButton("دواتر ➡️",callback_data=f"qr:list:{page+1}"))
+    if nav: rows.append(nav)
+    text=f"🎙️ *قارییەکانی قورئانی پیرۆز*\n{len(reciters)} قاری — قارییەک هەڵبژێرە:"
+    if edit: await update.callback_query.edit_message_text(text,reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
+    else: await update.effective_message.reply_text(text,reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
+
+async def show_qari_surahs(update,index):
+    reciters=[r for r in load_json("dangakan") if isinstance(r,dict) and str(r.get("doxx"," ")).lower()=="true" and r.get("url")]
+    if index<0 or index>=len(reciters): return await update.callback_query.answer("قاری نەدۆزرایەوە",show_alert=True)
+    item=reciters[index]
+    with db("surat.db") as c: surahs=c.execute("SELECT soraid,name,aya FROM surat ORDER BY soraid").fetchall()
+    rows=[[InlineKeyboardButton(f"{sid}. {name} ({count} ئایەت)",callback_data=f"qr:play:{index}:{sid}")] for sid,name,count in surahs]
+    rows.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ قارییەکان",callback_data="qr:list:0")])
+    title=str(item.get("name_ar") or "قاری").strip()
+    await update.callback_query.edit_message_text(f"🎙️ *{title}*\n\nسوڕەتێک هەڵبژێرە بۆ گوێگرتن:",reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
+
+async def play_qari_surah(update,context,index,sid):
+    reciters=[r for r in load_json("dangakan") if isinstance(r,dict) and str(r.get("doxx"," ")).lower()=="true" and r.get("url")]
+    if index<0 or index>=len(reciters) or not 1<=sid<=114: return await update.callback_query.answer("زانیاریی دەنگ نەدۆزرایەوە",show_alert=True)
+    item=reciters[index]
+    base=str(item.get("url"," ")).strip()
+    if not base.startswith(("https://","http://")): return await update.callback_query.answer("لینکی دەنگ نادروستە",show_alert=True)
+    audio_url=base.rstrip("/")+f"/{sid:03d}.mp3"
+    with db("surat.db") as c: row=c.execute("SELECT name FROM surat WHERE soraid=?",(sid,)).fetchone()
+    surah_name=row[0] if row else f"سوڕەت {sid}"
+    qari_name=str(item.get("name_ar") or "قاری").strip()
+    await update.callback_query.answer("🎧 ئامادەکردنی دەنگ...")
+    try:
+        await context.bot.send_audio(chat_id=update.effective_chat.id,audio=audio_url,title=f"{surah_name} — {qari_name}"[:64],performer=qari_name[:64],caption=f"📖 سوڕەتی {surah_name}\n🎙️ قاری: {qari_name}")
+    except Exception:
+        log.exception("Could not send recitation audio: %s",audio_url)
+        await update.effective_message.reply_text(f"🎧 دەنگەکە لە تێلەگرامدا بە ڕاستەوخۆ نەبوو بنێردرێت. دەتوانیت لەم لینکەوە بیبیستیت:\n{audio_url}",reply_markup=ik([[InlineKeyboardButton("▶️ گوێگرتن لە دەنگ",url=audio_url)],[InlineKeyboardButton("🔙 گەڕانەوە بۆ سوڕەتەکان",callback_data=f"qr:pick:{index}")]]),disable_web_page_preview=True)
+
 async def content_menu(update):
     rows=[]
     keys=list(JSON_FILES)
@@ -540,7 +582,7 @@ async def handle_text(update,context):
         "🌙 ڕەمەزان":lambda:ramadan_menu(update),
         "✨ ناوەکانی خودا":lambda:show_names(update,0),
         "🧠 تاقیکردنەوە":lambda:quiz_start(update,context),
-        "🎙️ قارییەکان":lambda:json_list(update,"dangakan",0),
+        "🎙️ قارییەکان":lambda:show_qari_menu(update,0),
         "📚 هەموو بابەتەکان":lambda:content_menu(update),
         "🔎 گەڕان":lambda:search_choose(update),
         "⭐ دڵخوازەکان":lambda:show_favorites(update),
@@ -566,6 +608,11 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     data=q.data or ""
     try:
+        if data.startswith("qr:list:"): return await show_qari_menu(update,int(data.split(":")[2]),True)
+        if data.startswith("qr:pick:"): return await show_qari_surahs(update,int(data.split(":")[2]))
+        if data.startswith("qr:play:"):
+            _,_,index,sid=data.split(":")
+            return await play_qari_surah(update,context,int(index),int(sid))
         if data == "lr": return await show_last_read(update)
         if data == "settings": return await show_settings(update)
         if data == "fv:list": return await show_favorites(update)
