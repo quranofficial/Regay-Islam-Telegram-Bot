@@ -168,7 +168,7 @@ async def show_favorites(update, context=None):
             InlineKeyboardButton("🗑", callback_data=f"fv:del:{fid}")
         ])
     await update.effective_message.reply_text(
-        f"⭐ *دڵخوازەکانت*\\n{len(rows)} ئایەت — بۆ کردنەوە ناوی ئایەتەکە هەڵبژێرە.",
+        f"⭐ *دڵخوازەکانت*\n{len(rows)} ئایەت — بۆ کردنەوە ناوی ئایەتەکە هەڵبژێرە.",
         reply_markup=ik(buttons), parse_mode=ParseMode.MARKDOWN)
 
 async def show_last_read(update, context=None):
@@ -189,7 +189,7 @@ async def show_settings(update, context=None):
         row = c.execute("SELECT tasbih FROM users WHERE user_id=?", (uid,)).fetchone()
     tasbih_count = row[0] if row else 0
     await update.effective_message.reply_text(
-        f"⚙️ *ڕێکخستنەکانی من*\\n\\n🏙 شاری هەڵبژێردراو: {city_label}\\n📿 ژمارەی تەسبیح: {tasbih_count}\\n\\nدەتوانیت شاری خۆت بگۆڕیت؛ ئەو شارە بۆ کاتەکانی بانگ و قیبلە بەکاردێت.",
+        f"⚙️ *ڕێکخستنەکانی من*\n\n🏙 شاری هەڵبژێردراو: {city_label}\n📿 ژمارەی تەسبیح: {tasbih_count}\n\nدەتوانیت شاری خۆت بگۆڕیت؛ ئەو شارە بۆ کاتەکانی بانگ و قیبلە بەکاردێت.",
         reply_markup=ik([
             [InlineKeyboardButton("🏙 گۆڕینی شار", callback_data="st:city")],
             [InlineKeyboardButton("⭐ دڵخوازەکان", callback_data="fv:list")],
