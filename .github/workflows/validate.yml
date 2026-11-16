@@ -1,0 +1,23 @@
+name: Validate Regay Islam Bot
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check Python syntax
+        run: python -m py_compile bot.py scripts_check_data.py
+      - name: Validate bundled data
+        run: python scripts_check_data.py
