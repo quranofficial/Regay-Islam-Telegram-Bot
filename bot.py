@@ -1,6 +1,6 @@
 """ڕێگای ئیسلام — Telegram edition, built from the supplied Android app data."""
 from __future__ import annotations
-import os, json, math, sqlite3, logging, asyncio
+import os, json, math, sqlite3, logging, asyncio, io, urllib.request
 from pathlib import Path
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
@@ -387,10 +387,23 @@ async def play_qari_surah(update,context,index,sid):
     surah_name=row[0] if row else f"سوڕەت {sid}"
     qari_name=str(item.get("name_ar") or "قاری").strip()
     try:
-        await context.bot.send_audio(chat_id=update.effective_chat.id,audio=audio_url,title=f"{surah_name} — {qari_name}"[:64],performer=qari_name[:64],caption=f"📖 سوڕەتی {surah_name}\n🎙️ قاری: {qari_name}")
+        # Download the MP3 first; Telegram URL fetching can fail on GitHub release redirects.
+        def download_audio():
+            request=urllib.request.Request(audio_url,headers={"User-Agent":"Regay-Islam-Telegram-Bot/1.0"})
+            with urllib.request.urlopen(request,timeout=45) as response:
+                data=response.read(50*1024*1024+1)
+            if len(data)>50*1024*1024:
+                raise ValueError("Audio file exceeds Telegram's 50 MB bot upload limit")
+            if not data:
+                raise ValueError("Empty audio response")
+            return data
+        audio_data=await asyncio.to_thread(download_audio)
+        audio_file=io.BytesIO(audio_data)
+        audio_file.name=f"{sid:03d}.mp3"
+        await context.bot.send_audio(chat_id=update.effective_chat.id,audio=audio_file,title=f"{surah_name} — {qari_name}"[:64],performer=qari_name[:64],caption=f"📖 سوڕەتی {surah_name}\n🎙️ قاری: {qari_name}")
     except Exception:
-        log.exception("Could not send recitation audio: %s",audio_url)
-        await update.effective_message.reply_text(f"🎧 دەنگەکە لە تێلەگرامدا بە ڕاستەوخۆ نەبوو بنێردرێت. دەتوانیت لەم لینکەوە بیبیستیت:\n{audio_url}",reply_markup=ik([[InlineKeyboardButton("▶️ گوێگرتن لە دەنگ",url=audio_url)],[InlineKeyboardButton("🔙 گەڕانەوە بۆ سوڕەتەکان",callback_data=f"qr:pick:{index}")]]),disable_web_page_preview=True)
+        log.exception("Could not download or send recitation audio: %s",audio_url)
+        await update.effective_message.reply_text(f"🎧 ناردنی ڕاستەوخۆی دەنگ سەرکەوتوو نەبوو. دەتوانیت لەم لینکەوە بیبیستیت:\n{audio_url}",reply_markup=ik([[InlineKeyboardButton("▶️ گوێگرتن لە دەنگ",url=audio_url)],[InlineKeyboardButton("🔙 گەڕانەوە بۆ سوڕەتەکان",callback_data=f"qr:pick:{index}")]]),disable_web_page_preview=True)
 
 async def content_menu(update):
     rows=[]
