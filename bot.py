@@ -386,7 +386,6 @@ async def play_qari_surah(update,context,index,sid):
     with db("surat.db") as c: row=c.execute("SELECT name FROM surat WHERE soraid=?",(sid,)).fetchone()
     surah_name=row[0] if row else f"سوڕەت {sid}"
     qari_name=str(item.get("name_ar") or "قاری").strip()
-    await update.callback_query.answer("🎧 ئامادەکردنی دەنگ...")
     try:
         await context.bot.send_audio(chat_id=update.effective_chat.id,audio=audio_url,title=f"{surah_name} — {qari_name}"[:64],performer=qari_name[:64],caption=f"📖 سوڕەتی {surah_name}\n🎙️ قاری: {qari_name}")
     except Exception:
