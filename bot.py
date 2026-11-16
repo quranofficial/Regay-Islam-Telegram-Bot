@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from supabase_store import (is_configured, save_user, get_city, set_city, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, get_user_count)
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -96,67 +97,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
           "📖 قورئان و ڕوونکردنەوە\n🕌 کاتەکانی بانگ بۆ شارەکانی کوردستان\n🧭 قیبلە، دوعا، زیکر و تەسبیح\n📚 فەرموودە، کتێب و بابەتە ئایینییەکان\n🌙 ڕەمەزان و ناوەکانی خودا\n\nهەڵبژاردنێک لە مێنیوەکە بکە.")
     await update.effective_message.reply_text(text, reply_markup=main_keyboard(), parse_mode=ParseMode.MARKDOWN)
 
-def save_user(uid, name, username):
-    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
-        c.execute("CREATE TABLE IF NOT EXISTS users(user_id INTEGER PRIMARY KEY, name TEXT, username TEXT, city TEXT, tasbih INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
-        c.execute("INSERT INTO users(user_id,name,username) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET name=excluded.name,username=excluded.username", (uid,name,username))
-
-def get_city(uid):
-    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
-        c.execute("CREATE TABLE IF NOT EXISTS users(user_id INTEGER PRIMARY KEY, name TEXT, username TEXT, city TEXT, tasbih INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
-        r=c.execute("SELECT city FROM users WHERE user_id=?",(uid,)).fetchone()
-        return r[0] if r else None
-
-def set_city(uid, city):
-    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
-        c.execute("CREATE TABLE IF NOT EXISTS users(user_id INTEGER PRIMARY KEY, name TEXT, username TEXT, city TEXT, tasbih INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
-        c.execute("INSERT INTO users(user_id,city) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET city=excluded.city",(uid,city))
-
-
-
-def init_user_features():
-    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
-        c.execute("""CREATE TABLE IF NOT EXISTS favorites(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            surah_id INTEGER NOT NULL,
-            ayah INTEGER NOT NULL,
-            title TEXT NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(user_id, surah_id, ayah)
-        )""")
-        c.execute("""CREATE TABLE IF NOT EXISTS last_read(
-            user_id INTEGER PRIMARY KEY,
-            surah_id INTEGER NOT NULL,
-            ayah_offset INTEGER NOT NULL DEFAULT 0,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )""")
-
-def save_last_read(uid, sid, offset):
-    init_user_features()
-    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
-        c.execute("""INSERT INTO last_read(user_id,surah_id,ayah_offset) VALUES(?,?,?)
-            ON CONFLICT(user_id) DO UPDATE SET surah_id=excluded.surah_id,
-            ayah_offset=excluded.ayah_offset, updated_at=CURRENT_TIMESTAMP""",
-            (uid, sid, offset))
-
-def add_favorite(uid, sid, ayah, title):
-    init_user_features()
-    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
-        cur = c.execute("INSERT OR IGNORE INTO favorites(user_id,surah_id,ayah,title) VALUES(?,?,?,?)",
-                        (uid, sid, ayah, title))
-        return cur.rowcount > 0
-
-def remove_favorite(uid, favorite_id):
-    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
-        c.execute("DELETE FROM favorites WHERE id=? AND user_id=?", (favorite_id, uid))
-
 async def show_favorites(update, context=None):
-    init_user_features()
     uid = update.effective_user.id
-    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
-        rows = c.execute("SELECT id,surah_id,ayah,title FROM favorites WHERE user_id=? ORDER BY id DESC LIMIT 30",
-                         (uid,)).fetchall()
+    rows = list_favorites(uid)
     if not rows:
         return await update.effective_message.reply_text(
             "⭐ هێشتا هیچ ئایەتێکت زیاد نەکردووە بۆ دڵخوازەکان.",
@@ -171,22 +114,20 @@ async def show_favorites(update, context=None):
         f"⭐ *دڵخوازەکانت*\n{len(rows)} ئایەت — بۆ کردنەوە ناوی ئایەتەکە هەڵبژێرە.",
         reply_markup=ik(buttons), parse_mode=ParseMode.MARKDOWN)
 
+
 async def show_last_read(update, context=None):
-    init_user_features()
-    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
-        row = c.execute("SELECT surah_id,ayah_offset FROM last_read WHERE user_id=?",
-                        (update.effective_user.id,)).fetchone()
+    row = get_last_read(update.effective_user.id)
     if not row:
         return await update.effective_message.reply_text(
             "📍 هێشتا شوێنی خوێندنەوەیەکت تۆمار نەکراوە. سوڕەتێک بکەرەوە و خوێندنەوەت دەست پێ بکە.")
     await show_ayahs(update, int(row[0]), int(row[1]))
 
+
 async def show_settings(update, context=None):
     uid = update.effective_user.id
     city = get_city(uid)
     city_label = city or "دیاری نەکراوە"
-    with sqlite3.connect(DATA / "bot_users.sqlite3") as c:
-        row = c.execute("SELECT tasbih FROM users WHERE user_id=?", (uid,)).fetchone()
+    row = get_tasbih(uid)
     tasbih_count = row[0] if row else 0
     await update.effective_message.reply_text(
         f"⚙️ *ڕێکخستنەکانی من*\n\n🏙 شاری هەڵبژێردراو: {city_label}\n📿 ژمارەی تەسبیح: {tasbih_count}\n\nدەتوانیت شاری خۆت بگۆڕیت؛ ئەو شارە بۆ کاتەکانی بانگ و قیبلە بەکاردێت.",
@@ -195,6 +136,7 @@ async def show_settings(update, context=None):
             [InlineKeyboardButton("⭐ دڵخوازەکان", callback_data="fv:list")],
             [InlineKeyboardButton("📍 دوا خوێندنەوە", callback_data="lr")]
         ]), parse_mode=ParseMode.MARKDOWN)
+
 
 def get_cities():
     # The Android app keeps Kurdish display names in cityme.json and table IDs in the prayer DB.
@@ -579,14 +521,10 @@ async def prayer_reminder_info(update):
 
 async def tasbih(update,context,change=0):
     uid=update.effective_user.id
-    with sqlite3.connect(DATA/"bot_users.sqlite3") as c:
-        c.execute("CREATE TABLE IF NOT EXISTS users(user_id INTEGER PRIMARY KEY, name TEXT, username TEXT, city TEXT, tasbih INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
-        c.execute("INSERT OR IGNORE INTO users(user_id) VALUES(?)",(uid,))
-        if change==0: c.execute("UPDATE users SET tasbih=0 WHERE user_id=?",(uid,))
-        elif change>0: c.execute("UPDATE users SET tasbih=tasbih+1 WHERE user_id=?",(uid,))
-        count=c.execute("SELECT tasbih FROM users WHERE user_id=?",(uid,)).fetchone()[0]
+    count=change_tasbih(uid,change)
     rows=[[InlineKeyboardButton("📿 تسبیح +1",callback_data="ts:+"),InlineKeyboardButton("🔄 سفر",callback_data="ts:0")]]
     await update.effective_message.reply_text(f"📿 *تەسبیحی ئەلیکترۆنی*\n\nژمارەی زیکر: *{count}*\n\nزیکرێک هەڵبژێرە و دوگمەی +1 دابگرە.",reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
+
 
 async def search_prompt(update, mode):
     context=update.effective_user
@@ -737,9 +675,9 @@ async def cmd_search(update,context):
 
 async def cmd_admin(update,context):
     if update.effective_user.id not in ADMIN_IDS: return
-    with sqlite3.connect(DATA/"bot_users.sqlite3") as c:
-        count=c.execute("SELECT count(*) FROM users").fetchone()[0]
+    count=get_user_count()
     await update.effective_message.reply_text(f"🛠 بەشی بەڕێوەبەر\n\n👥 ژمارەی بەکارهێنەران: {count}\n📖 ئایەت: 6236\n📚 فەرموودە: 400")
+
 
 async def error_handler(update,context):
     log.exception("Unhandled bot error",exc_info=context.error)
@@ -764,7 +702,9 @@ async def help_cmd(update,context):
 def main():
     init_user_features()
     if not TOKEN:
-        raise SystemExit("BOT_TOKEN environment variable is required. Copy .env.example to .env and set your Telegram bot token.")
+        raise SystemExit("BOT_TOKEN environment variable is required.")
+    if not is_configured():
+        raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables are required.")
     app=Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("menu",menu_cmd)); app.add_handler(CommandHandler("help",help_cmd))
     app.add_handler(CommandHandler("quran",quran_cmd)); app.add_handler(CommandHandler("prayer",prayer_cmd)); app.add_handler(CommandHandler("search",cmd_search)); app.add_handler(CommandHandler("admin",cmd_admin))
