@@ -116,7 +116,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📖 قورئان و مووسحەف\n🕌 کاتەکانی بانگ\n🎙️ قارییەکان\n"
             "📚 کتێب و فەرموودە\n🌙 ڕەمەزان\n📿 تەسبیح و زیکر\n\n"
             "هەڵبژاردنێک لە مێنیوەکە بکە.")
-    await update.effective_message.reply_text(text, reply_markup=main_keyboard(), parse_mode=ParseMode.MARKDOWN)
+    await update.effective_message.reply_text(text, reply_markup=main_keyboard(update.effective_user.id), parse_mode=ParseMode.MARKDOWN)
 
 
 def setup_city_menu(update, page=0, edit=False):
@@ -172,7 +172,7 @@ async def finish_setup(update, uid, qari_id, settings=False):
         "✅ ڕێکخستنەکانت پاشەکەوت کران. لە داهاتوودا داوایان لێ ناکرێتەوە؛ "
         "هەر کاتێک بتەوێت لە ⚙️ ڕێکخستن دەستکارییان بکە."
     )
-    await update.effective_message.reply_text("🕌 بەخێربێیت بۆ ڕێگای ئیسلام.", reply_markup=main_keyboard())
+    await update.effective_message.reply_text("🕌 بەخێربێیت بۆ ڕێگای ئیسلام.", reply_markup=main_keyboard(update.effective_user.id))
 
 async def show_favorites(update, context=None):
     uid = update.effective_user.id
@@ -200,6 +200,27 @@ async def show_last_read(update, context=None):
     await show_ayahs(update, int(row[0]), int(row[1]))
 
 
+async def show_menu_order(update, edit=False):
+    uid = update.effective_user.id
+    saved = get_menu_order(uid)
+    order = [key for key in saved if key in MENU_ITEMS]
+    order += [key for key in DEFAULT_MENU_ORDER if key not in order]
+    rows = []
+    for index, key in enumerate(order):
+        controls = []
+        if index:
+            controls.append(InlineKeyboardButton("⬆️", callback_data=f"mo:up:{key}"))
+        if index < len(order)-1:
+            controls.append(InlineKeyboardButton("⬇️", callback_data=f"mo:down:{key}"))
+        rows.append([InlineKeyboardButton(f"{index+1}. {MENU_ITEMS[key]}", callback_data="mo:done")] + controls)
+    rows.append([InlineKeyboardButton("✅ تەواو", callback_data="mo:done")])
+    message = "↕️ ڕێکخستنی مێنیو\n\nبە دوگمەی ⬆️ و ⬇️ شوێنی هەر بەشێک بگۆڕە. گۆڕانکارییەکان خۆکارانە پاشەکەوت دەکرێن."
+    if edit:
+        await update.callback_query.edit_message_text(message, reply_markup=ik(rows))
+    else:
+        await update.effective_message.reply_text(message, reply_markup=ik(rows))
+
+
 async def show_settings(update, context=None):
     uid = update.effective_user.id
     city = get_city(uid)
@@ -219,7 +240,8 @@ async def show_settings(update, context=None):
             [InlineKeyboardButton("🎙️ گۆڕینی قاری", callback_data="st:qari:menu")],
             [InlineKeyboardButton(("🔕 ناچالاککردنی ئاگادارکردنەوە" if notifications else "🔔 چالاککردنی ئاگادارکردنەوە"), callback_data=f"st:notify:{notify_action}")],
             [InlineKeyboardButton("⭐ دڵخوازەکان", callback_data="fv:list")],
-            [InlineKeyboardButton("📍 دوا خوێندنەوە", callback_data="lr")]
+            [InlineKeyboardButton("📍 دوا خوێندنەوە", callback_data="lr")],
+            [InlineKeyboardButton("↕️ ڕێکخستنی شوێنی بەشەکان", callback_data="mo:open")]
         ]), parse_mode=ParseMode.MARKDOWN)
 
 
@@ -1225,7 +1247,7 @@ async def handle_text(update,context):
         "🕋 تەوبە و ئامۆژگاری":lambda:repentance_menu(update),
         "📜 ٤٠٠ فەرموودە":lambda:json_list(update,"farmwda",0),
         "🌙 ڕەمەزان":lambda:ramadan_menu(update),
-        "✨ ناوەکانی خودا":lambda:show_names(update,0),
+        "✨ ناوەکانی خودا":lambda:names_menu(update,0),
         "🧠 تاقیکردنەوە":lambda:quiz_start(update,context),
         "🎙️ قارییەکان":lambda:show_qari_menu(update,0),
         "📚 هەموو بابەتەکان":lambda:content_menu(update),
@@ -1237,7 +1259,7 @@ async def handle_text(update,context):
     }
     fn=mapping.get(text)
     if fn: await fn()
-    else: await update.effective_message.reply_text("تکایە لە مێنیوەکە هەڵبژێرە یان /start بنووسە.",reply_markup=main_keyboard())
+    else: await update.effective_message.reply_text("تکایە لە مێنیوەکە هەڵبژێرە یان /start بنووسە.",reply_markup=main_keyboard(update.effective_user.id))
 
 async def search_choose(update):
     await update.effective_message.reply_text("🔎 جۆری گەڕان هەڵبژێرە:",reply_markup=ik([
@@ -1259,10 +1281,19 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("setup:city:"):
         city = data.split(":", 2)[2]
         set_city(q.from_user.id, city)
+        if context.user_data.pop("settings_city_flow", False):
+            return await q.edit_message_text("✅ شاری نوێ پاشەکەوت کرا.")
         return await setup_qari_menu(update)
     if data.startswith("setup:reciter:"):
         rid = data.split(":")[2]
         return await finish_setup(update, q.from_user.id, rid)
+    if data == "st:city":
+        context.user_data["settings_city_flow"] = True
+        return await prayer_city_list(update, 0, True)
+    if data.startswith("st:notify:"):
+        enabled = data.endswith(":on")
+        set_prayer_notifications(q.from_user.id, enabled)
+        return await q.edit_message_text("✅ ئاگادارکردنەوەی بانگ چالاک کرا." if enabled else "🔕 ئاگادارکردنەوەی بانگ ناچالاک کرا.")
     if data == "st:qari:menu":
         return await setup_qari_menu(update, 0, True, True)
     if data.startswith("st:qpage:"):
@@ -1281,6 +1312,36 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("pb:item:"):
         _, _, index, page = data.split(":")
         return await pdf_book_item(update, int(index), int(page))
+    if data.startswith("pb:send:"):
+        _, _, index, page = data.split(":")
+        return await send_pdf_book(update, context, int(index), int(page))
+    if data == "kursi:audio":
+        return await send_ayat_kursi_audio(update, context)
+    if data.startswith("tz:list:"):
+        return await tasbih_picker(update, int(data.split(":")[2]), True)
+    if data.startswith("tz:pick:"):
+        index = int(data.split(":")[2])
+        items = load_json("zikrakan")
+        if not 0 <= index < len(items):
+            return await q.answer("زیکرەکە نەدۆزرایەوە.", show_alert=True)
+        set_tasbih_zikr(q.from_user.id, index)
+        reset_tasbih(q.from_user.id)
+        return await tasbih(update, context, 0, True)
+    if data == "mo:open":
+        return await show_menu_order(update, True)
+    if data.startswith("mo:up:") or data.startswith("mo:down:"):
+        _, direction, key = data.split(":", 2)
+        order = get_menu_order(q.from_user.id)
+        order = [item for item in order if item in MENU_ITEMS]
+        order += [item for item in DEFAULT_MENU_ORDER if item not in order]
+        index = order.index(key) if key in order else 0
+        target = index - 1 if direction == "up" else index + 1
+        if 0 <= target < len(order):
+            order[index], order[target] = order[target], order[index]
+        set_menu_order(q.from_user.id, order)
+        return await show_menu_order(update, True)
+    if data == "mo:done":
+        return await q.edit_message_text("✅ ڕیزبەندی مێنیوەکەت پاشەکەوت کرا. بۆ بینینی مێنیوی نوێ /menu بنووسە.")
     if data.startswith("qaudio:"):
         return await play_default_qari(update, context, int(data.split(":")[1]))
     if data.startswith("qg:"):
@@ -1357,6 +1418,7 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         if data.startswith("jl:"):
             _,key,page=data.split(":"); return await json_list(update,key,int(page),True)
         if data.startswith("nm:"): return await show_names(update,int(data.split(":")[1]))
+        if data.startswith("nml:"): return await names_menu(update,int(data.split(":")[1]),True)
         if data.startswith("du:"): return await show_dua(update,int(data.split(":")[1]))
         if data == "bm": return await books_menu(update)
         if data.startswith("bm:"): return await books_menu(update,int(data.split(":")[1]),True)
@@ -1367,10 +1429,10 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             return await book_item(update,int(bits[1]),int(bits[2]) if len(bits)>2 else 0,int(bits[3]) if len(bits)>3 else 0)
         if data == "ts:reset":
             reset_tasbih(q.from_user.id)
-            return await tasbih(update,context,0)
+            return await tasbih(update,context,0,True)
         if data.startswith("ts:"):
             n=1 if data.endswith("+") else 0
-            return await tasbih(update,context,n)
+            return await tasbih(update,context,n,True)
         if data.startswith("gb:"): return await repentance_item(update,int(data.split(":")[1]))
         if data.startswith("gx:"):
             _,table,index=data.split(":"); return await repentance_subitem(update,table,int(index))
@@ -1599,7 +1661,7 @@ async def prayer_cmd(update,context):
     if city: await prayer_times(update,city)
     else: await prayer_city_list(update)
 async def help_cmd(update,context):
-    await update.effective_message.reply_text("/start — دەستپێکردن\n/menu — مێنیوی سەرەکی\n/quran — قورئان\n/prayer — کاتەکانی بانگ\n/favorites — دڵخوازەکان\n/lastread — دوا خوێندنەوە\n/settings — ڕێکخستن\n/search — گەڕان\n\nهەموو دوگمەکان لە مێنیوی سەرەکی بەردەستن.",reply_markup=main_keyboard())
+    await update.effective_message.reply_text("/start — دەستپێکردن\n/menu — مێنیوی سەرەکی\n/quran — قورئان\n/prayer — کاتەکانی بانگ\n/favorites — دڵخوازەکان\n/lastread — دوا خوێندنەوە\n/settings — ڕێکخستن\n/search — گەڕان\n\nهەموو دوگمەکان لە مێنیوی سەرەکی بەردەستن.",reply_markup=main_keyboard(update.effective_user.id))
 
 def main():
     init_user_features()
