@@ -261,8 +261,11 @@ async def membership_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    save_user(user.id, user.first_name or "", user.username or "")
-    if not is_setup_completed(user.id):
+    # Supabase calls are synchronous; run them off the event loop so Telegram
+    # can keep responding to other users while this user's profile is saved.
+    await asyncio.to_thread(save_user, user.id, user.first_name or "", user.username or "")
+    setup_completed = await asyncio.to_thread(is_setup_completed, user.id)
+    if not setup_completed:
         await update.effective_message.reply_text(
             "🕌 بەخێربێیت بۆ بۆتی ڕێگای ئیسلام\n\n"
             "📖 قورئانی پیرۆز و مصحەف\n🕌 کاتەکانی بانگ\n📜 فەرموودە و زانیاریی ئایینی\n🤲 دوعا و زیکر\n\n"
@@ -2141,7 +2144,7 @@ async def post_init(app):
 
 async def menu_cmd(update,context):
     user = update.effective_user
-    save_user(user.id, user.first_name or "", user.username or "")
+    await asyncio.to_thread(save_user, user.id, user.first_name or "", user.username or "")
     await update.effective_message.reply_text("📚 *مێنیوی سەرەکی*\n\n👇 بەشی دڵخوازت هەڵبژێرە بۆ دەستپێکردن.", reply_markup=main_keyboard(user.id), parse_mode=ParseMode.MARKDOWN)
 
 
@@ -2161,7 +2164,9 @@ def main():
         raise SystemExit("BOT_TOKEN environment variable is required.")
     if not is_configured():
         raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables are required.")
-    app=Application.builder().token(TOKEN).post_init(post_init).build()
+    # Process independent updates concurrently instead of making every user
+    # wait behind a slow network/database operation from another update.
+    app=Application.builder().token(TOKEN).post_init(post_init).concurrent_updates(16).build()
     app.add_handler(MessageHandler(filters.ALL, membership_gate), group=-2)
     app.add_handler(CallbackQueryHandler(membership_gate), group=-2)
     app.add_handler(MessageHandler(filters.ALL, block_banned), group=-1)
