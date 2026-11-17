@@ -785,31 +785,77 @@ async def repentance_subitem(update,table,index):
     with db("garanawa.db") as c: row=c.execute(f'SELECT title,desc FROM "{table}" ORDER BY _id LIMIT 1 OFFSET ?',(index,)).fetchone()
     if row: await update.effective_message.reply_text(f"{row[0]}\n\n{row[1][:3700]}",disable_web_page_preview=True)
 
+RAMADAN_TABLES = {
+    "welcome": "پێشوازی لە ڕەمەزان",
+    "barbang": "بەربانگ و دوعاکانی",
+    "parshew": "پارشێو و ڕۆژوو",
+    "nwezhtaraweh": "نوێژی تەراویح",
+    "shawyqadr": "شەوی قەدر"
+}
+
+
+def valid_ramadan_tables(conn):
+    existing = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    )}
+    return [(table, title) for table, title in RAMADAN_TABLES.items() if table in existing]
+
+
 async def ramadan_menu(update):
-    with db("ramazanew.db") as c:
-        rows=c.execute("SELECT titles,tableName FROM Titles ORDER BY _id").fetchall()
-    buttons=[[InlineKeyboardButton(title.strip(),callback_data=f"rd:{table}:0")] for title,table in rows]
-    await update.effective_message.reply_text("🌙 *بابەتەکانی ڕەمەزان*",reply_markup=ik(buttons),parse_mode=ParseMode.MARKDOWN)
+    with db("ramazanew.db") as conn:
+        tables = valid_ramadan_tables(conn)
+        buttons = []
+        for table, title in tables:
+            count = conn.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
+            buttons.append([InlineKeyboardButton(f"🌙 {title} — {count} بابەت", callback_data=f"rd:{table}:0")])
+    await update.effective_message.reply_text(
+        "🌙 *کتێبخانەی ڕەمەزان*\nبەشێک هەڵبژێرە بۆ خوێندنەوە:",
+        reply_markup=ik(buttons), parse_mode=ParseMode.MARKDOWN
+    )
 
-async def ramadan_list(update,table,page=0):
-    allowed={r[0] for r in db("ramazanew.db").execute("SELECT tableName FROM Titles")}
-    if table not in allowed: return await update.callback_query.answer("بابەت نەدۆزرایەوە",show_alert=True)
-    with db("ramazanew.db") as c:
-        rows=c.execute(f'SELECT _id,title FROM "{table}" ORDER BY _id LIMIT 10 OFFSET ?',(page*10,)).fetchall()
-        total=c.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
-    buttons=[[InlineKeyboardButton(str(title)[:58],callback_data=f"ri:{table}:{rid}")] for rid,title in rows]
-    nav=[]
-    if page: nav.append(InlineKeyboardButton("⬅️",callback_data=f"rd:{table}:{page-1}"))
-    if (page+1)*10<total: nav.append(InlineKeyboardButton("➡️",callback_data=f"rd:{table}:{page+1}"))
-    if nav: buttons.append(nav)
-    buttons.append([InlineKeyboardButton("🔙 ڕەمەزان",callback_data="rm")])
-    await update.callback_query.edit_message_text("🌙 *بابەتەکانی ڕەمەزان*",reply_markup=ik(buttons),parse_mode=ParseMode.MARKDOWN)
 
-async def ramadan_item(update,table,rid):
-    allowed={r[0] for r in db("ramazanew.db").execute("SELECT tableName FROM Titles")}
-    if table not in allowed: return await update.callback_query.answer("بابەت نەدۆزرایەوە",show_alert=True)
-    with db("ramazanew.db") as c: row=c.execute(f'SELECT title,desc FROM "{table}" WHERE _id=?',(rid,)).fetchone()
-    if row: await update.effective_message.reply_text(f"🌙 {row[0]}\n\n{row[1][:3700]}",disable_web_page_preview=True)
+async def ramadan_list(update, table, page=0):
+    with db("ramazanew.db") as conn:
+        allowed = {name for name, _ in valid_ramadan_tables(conn)}
+        if table not in allowed:
+            return await update.callback_query.answer("ئەم بەشە لە داتابەیسی سەرچاوەدا بەردەست نییە.", show_alert=True)
+        rows = conn.execute(
+            f'SELECT _id,title FROM "{table}" ORDER BY _id LIMIT 10 OFFSET ?', (page * 10,)
+        ).fetchall()
+        total = conn.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
+    if not rows:
+        return await update.callback_query.answer("هیچ بابەتێک لەم لاپەڕەیەدا نییە.", show_alert=True)
+    buttons = [[InlineKeyboardButton(str(title)[:58], callback_data=f"ri:{table}:{rid}")]
+               for rid, title in rows]
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"rd:{table}:{page-1}"))
+    if (page + 1) * 10 < total:
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"rd:{table}:{page+1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔙 کتێبخانەی ڕەمەزان", callback_data="rm")])
+    await update.callback_query.edit_message_text(
+        f"🌙 *{RAMADAN_TABLES.get(table, 'ڕەمەزان')}*\n{total} بابەت — لاپەڕە {page+1}",
+        reply_markup=ik(buttons), parse_mode=ParseMode.MARKDOWN
+    )
+
+
+async def ramadan_item(update, table, rid):
+    with db("ramazanew.db") as conn:
+        allowed = {name for name, _ in valid_ramadan_tables(conn)}
+        if table not in allowed:
+            return await update.callback_query.answer("ئەم بابەتە لە داتابەیسدا نییە.", show_alert=True)
+        row = conn.execute(
+            f'SELECT title,desc FROM "{table}" WHERE _id=?', (rid,)
+        ).fetchone()
+    if not row:
+        return await update.callback_query.answer("بابەت نەدۆزرایەوە.", show_alert=True)
+    await update.effective_message.reply_text(
+        f"🌙 *{row[0]}*\n\n{row[1][:3700]}",
+        parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True,
+        reply_markup=ik([[InlineKeyboardButton("🔙 گەڕانەوە بۆ بەش", callback_data=f"rd:{table}:0")]])
+    )
 
 async def quiz_start(update,context):
     with db("surat.db") as c: rows=c.execute("SELECT soraid,name,aya FROM surat ORDER BY soraid").fetchall()
@@ -839,9 +885,88 @@ async def tasbih(update,context,change=0):
 
 
 async def search_prompt(update, mode):
-    context=update.effective_user
-    # Set per-chat state in user_data by caller.
     await update.effective_message.reply_text("🔎 وشە یان دەستەواژەکە بنووسە بۆ گەڕان:")
+
+
+async def feedback_prompt(update):
+    await update.effective_message.reply_text(
+        "💬 *پێشنیار و ڕەخنە*\n\nجۆری پەیامەکەت هەڵبژێرە:",
+        reply_markup=ik([
+            [InlineKeyboardButton("🐞 ڕاپۆرتی هەڵە", callback_data="fb:cat:bug")],
+            [InlineKeyboardButton("💡 پێشنیار", callback_data="fb:cat:suggestion")],
+            [InlineKeyboardButton("📚 ناوەڕۆک", callback_data="fb:cat:content")],
+            [InlineKeyboardButton("✉️ گشتی", callback_data="fb:cat:general")]
+        ]), parse_mode=ParseMode.MARKDOWN
+    )
+
+
+async def receive_feedback(update, context, message):
+    category = context.user_data.pop("feedback_category", "general")
+    context.user_data.pop("feedback_waiting", None)
+    uid = update.effective_user.id
+    try:
+        await asyncio.to_thread(save_feedback, uid, category, message[:4000])
+        user = update.effective_user
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"💬 Feedback\n👤 {user.full_name} (@{user.username or '—'})\n🆔 {uid}\n📂 {category}\n\n{message[:3500]}"
+                )
+            except Exception:
+                log.exception("Could not notify admin about feedback from %s", uid)
+        await update.effective_message.reply_text("✅ سوپاس بۆ پەیامەکەت. پێشنیارەکەت بە سەرکەوتوویی نێردرا.")
+    except Exception:
+        log.exception("Could not save feedback from user %s", uid)
+        await update.effective_message.reply_text("⚠️ ناردنی پەیامەکەت سەرکەوتوو نەبوو. تکایە دواتر هەوڵ بدە.")
+
+
+def load_pdf_books():
+    with open(DATA / "ktebakan.json", "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    return data if isinstance(data, list) else []
+
+
+async def pdf_books_menu(update, page=0, edit=False):
+    books = load_pdf_books()
+    page_size = 10
+    total_pages = max(1, (len(books) + page_size - 1) // page_size)
+    page = max(0, min(page, total_pages - 1))
+    rows = []
+    for index, book in enumerate(books[page*page_size:(page+1)*page_size], start=page*page_size):
+        rows.append([InlineKeyboardButton(str(book.get("name") or f"کتێب {index+1}")[:58],
+                                          callback_data=f"pb:item:{index}:{page}")])
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"pb:list:{page-1}"))
+    if page + 1 < total_pages:
+        nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"pb:list:{page+1}"))
+    if nav:
+        rows.append(nav)
+    text = f"📚 *کتێبخانەی PDF*\n{len(books)} کتێب — لاپەڕە {page+1}/{total_pages}\nکتێبێک هەڵبژێرە:"
+    if edit:
+        await update.callback_query.edit_message_text(text, reply_markup=ik(rows), parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.effective_message.reply_text(text, reply_markup=ik(rows), parse_mode=ParseMode.MARKDOWN)
+
+
+async def pdf_book_item(update, index, page=0):
+    books = load_pdf_books()
+    if not 0 <= index < len(books):
+        return await update.callback_query.answer("کتێب نەدۆزرایەوە", show_alert=True)
+    book = books[index]
+    title = str(book.get("name") or f"کتێب {index+1}")
+    about_text = str(book.get("about") or "کورتەی کتێب بەردەست نییە.")
+    author = str(book.get("author") or "نووسەر دیاری نەکراوە")
+    url = str(book.get("url") or "")
+    buttons = []
+    if url.startswith("https://"):
+        buttons.append([InlineKeyboardButton("📖 کردنەوەی کتێب (PDF)", url=url)])
+    buttons.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ کتێبخانە", callback_data=f"pb:list:{page}")])
+    await update.callback_query.edit_message_text(
+        f"📚 *{title}*\n\n✍️ نووسەر: {author}\n\n{about_text[:2500]}",
+        reply_markup=ik(buttons), parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True
+    )
 
 async def do_search(update,context,query):
     mode=context.user_data.pop("search_mode","all")
@@ -879,6 +1004,8 @@ async def handle_text(update,context):
             context.user_data.pop("admin_broadcast_waiting", None)
             return await update.effective_message.reply_text("❎ ناردنی پەیامی گشتی هەڵوەشایەوە.")
         return await admin_broadcast(update, context, text)
+    if context.user_data.get("feedback_waiting"):
+        return await receive_feedback(update, context, text)
     if "search_mode" in context.user_data:
         return await do_search(update,context,text)
     mapping={
@@ -891,6 +1018,8 @@ async def handle_text(update,context):
         "📿 تەسبیح و زیکر":lambda:tasbih(update,context),
         "🤲 دوعاکان":lambda:show_dua(update,0),
         "📚 کتێب و فەرموودە":lambda:books_menu(update),
+        "📚 کتێبخانەی PDF":lambda:pdf_books_menu(update),
+        "💬 پێشنیار و ڕەخنە":lambda:feedback_prompt(update),
         "🕋 تەوبە و ئامۆژگاری":lambda:repentance_menu(update),
         "📜 ٤٠٠ فەرموودە":lambda:json_list(update,"farmwda",0),
         "🌙 ڕەمەزان":lambda:ramadan_menu(update),
