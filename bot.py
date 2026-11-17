@@ -570,6 +570,7 @@ async def show_quran_page(update, page=1, edit=False):
 
 async def send_ayat_kursi_audio(update, context):
     audio_url = "https://cdn.islamic.network/quran/audio/128/ar.alafasy/262.mp3"
+    status = await update.effective_message.reply_text("⏳ دەنگی ئایەتی کورسی دادەبەزێت...\\n📥 وەرگرتنی فایل")
     try:
         def download():
             request = urllib.request.Request(audio_url, headers={"User-Agent": "Regay-Islam-Telegram-Bot/1.0"})
@@ -579,12 +580,17 @@ async def send_ayat_kursi_audio(update, context):
                 raise ValueError("Ayat audio file is empty or too large")
             return data
         data = await asyncio.to_thread(download)
+        await status.edit_text("✅ دەنگەکە وەرگیرا.\\n📤 ئێستا بۆ تێلێگرام دەنێردرێت...")
         audio = io.BytesIO(data)
         audio.name = "ayat-al-kursi.mp3"
         await context.bot.send_audio(chat_id=update.effective_chat.id, audio=audio, title="Ayat al-Kursi — Mishary Alafasy", performer="مشاري العفاسي", caption="🕋 ئایەتی کورسی — البقرة ٢:٢٥٥")
+        await status.delete()
     except Exception:
         log.exception("Ayat al-Kursi audio delivery failed")
-        await update.effective_message.reply_text("⚠️ ناردنی دەنگی ئایەتی کورسی سەرکەوتوو نەبوو.")
+        try:
+            await status.edit_text("⚠️ ناردنی دەنگی ئایەتی کورسی سەرکەوتوو نەبوو.")
+        except Exception:
+            pass
 
 
 async def show_ayat_kursi(update):
@@ -1517,7 +1523,7 @@ async def send_pdf_book(update, context, index, page=0):
     if not url.startswith("https://"):
         return await update.effective_message.reply_text("لینکی فایلەکە دروست نییە.")
     title = str(book.get("name") or f"کتێب {index+1}")
-    status = await update.effective_message.reply_text(f"⏳ فایلەکەی «{title}» ئامادە دەکرێت...")
+    status = await update.effective_message.reply_text(f"⏳ فایلەکەی «{title}» ئامادە دەکرێت...\\n📥 وەرگرتنی PDF")
     try:
         def download():
             request = urllib.request.Request(url, headers={"User-Agent": "Regay-Islam-Telegram-Bot/1.0"})
@@ -1531,6 +1537,7 @@ async def send_pdf_book(update, context, index, page=0):
                 raise ValueError("URL did not return a PDF file")
             return data
         payload = await asyncio.to_thread(download)
+        await status.edit_text("✅ کتێبەکە وەرگیرا.\\n📤 ئێستا PDF ـەکە بۆ تێلێگرام دەنێردرێت...")
         document = io.BytesIO(payload)
         safe_name = "".join(ch for ch in title if ch.isalnum() or ch in " _-")[:70] or "islamic-book"
         document.name = safe_name + ".pdf"
