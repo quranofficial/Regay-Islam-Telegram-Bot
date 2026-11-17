@@ -1,6 +1,6 @@
 """ڕێگای ئیسلام — Telegram edition, built from the supplied Android app data."""
 from __future__ import annotations
-import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar, hashlib, time
+import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar, hashlib, time, shutil, subprocess, tempfile
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from datetime import datetime, date, timedelta
@@ -189,31 +189,58 @@ VIDEO_PROFILES = [
 
 
 async def firebase_video_profiles():
-    value = _firebase_decode(await firebase_get("videoall"))
-    if isinstance(value, list):
-        return [
-            {"image": str(item.get("image") or "").strip(),
-             "name": str(item.get("name") or "بێ ناو").strip(),
-             "tag": str(item.get("tag") or "").strip()}
-            for item in value if isinstance(item, dict) and str(item.get("tag") or "").strip()
-        ]
-    # Keep the supplied profile list available if the optional Firebase node is unavailable.
-    return VIDEO_PROFILES
+    value = await firebase_get("videoall")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = None
+    # Firebase may store profiles as an array, a tag-keyed object, or one profile object.
+    if isinstance(value, dict):
+        for wrapper in ("profiles", "data", "items"):
+            if wrapper in value and isinstance(value[wrapper], (dict, list)):
+                value = value[wrapper]
+                break
+    if isinstance(value, dict) and ("image" in value or "tag" in value):
+        entries = [(str(value.get("tag") or ""), value)]
+    elif isinstance(value, dict):
+        entries = [(str(key), item) for key, item in value.items()]
+    elif isinstance(value, list):
+        entries = [(str(index), item) for index, item in enumerate(value)]
+    else:
+        entries = []
+    profiles = []
+    for key, item in entries:
+        if not isinstance(item, dict):
+            continue
+        tag = str(item.get("tag") or item.get("id") or key).strip()
+        image = str(item.get("image") or item.get("photo") or item.get("img") or "").strip()
+        name = str(item.get("name") or item.get("title") or "بێ ناو").strip()
+        if tag:
+            profiles.append({"image": image, "name": name, "tag": tag})
+    return profiles or VIDEO_PROFILES
 
 
 async def firebase_videos(profile_tag=None):
     value = await firebase_get(f"videoNew/{profile_tag}" if profile_tag else "videoNew")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = None
     rows = []
-    if isinstance(value, dict):
-        for folder, items in ([(str(profile_tag), value)] if profile_tag else value.items()):
-            if not isinstance(items, dict):
-                continue
-            for key, item in items.items():
-                if isinstance(item, dict):
-                    row = {"id": str(key), "folder": str(folder), **item}
-                    row["url"] = row.get("url") or row.get("link") or row.get("video")
-                    if str(row.get("url") or "").startswith(("http://", "https://")):
-                        rows.append(row)
+    if isinstance(value, list):
+        entries = [(str(i), item) for i, item in enumerate(value)]
+    elif isinstance(value, dict):
+        entries = list(value.items())
+    else:
+        entries = []
+    for key, item in entries:
+        if isinstance(item, dict):
+            row = {"id": str(item.get("id") or key), "folder": str(profile_tag or ""), **item}
+            row["url"] = row.get("url") or row.get("link") or row.get("video") or row.get("file")
+            if str(row.get("url") or "").startswith(("http://", "https://")):
+                rows.append(row)
     rows.sort(key=lambda x: int(x.get("date") or 0) if str(x.get("date") or "").isdigit() else 0, reverse=True)
     return rows
 
@@ -1086,14 +1113,58 @@ async def play_qari_surah(update,context,index,sid):
         f"⏳ دەنگی {surah_name} بە قاری {qari_name} ئامادە دەکرێت...\n📥 وەرگرتنی MP3"
     )
     try:
-        # Download the MP3 first; Telegram URL fetching can fail on GitHub release redirects.
+        # Allow large recitations to download; split them losslessly into Telegram-safe MP3 parts.
         audio_data = await asyncio.to_thread(
-            download_cached_bytes, audio_url, 50 * 1024 * 1024, 45
+            download_cached_bytes, audio_url, 512 * 1024 * 1024, 120
         )
-        await status.edit_text("📤 دەنگەکە وەرگیرا؛ ئێستا بۆ تێلێگرام دەنێردرێت...")
-        audio_file=io.BytesIO(audio_data)
-        audio_file.name=f"{sid:03d}.mp3"
-        await context.bot.send_audio(chat_id=update.effective_chat.id,audio=audio_file,title=f"{surah_name} — {qari_name}"[:64],performer=qari_name[:64],caption=f"📖 سوڕەتی {surah_name}\n🎙️ قاری: {qari_name}")
+        await status.edit_text("📤 دەنگەکە وەرگیرا؛ ئامادەی ناردنە...")
+        chat_id = update.effective_chat.id
+        title = f"{surah_name} — {qari_name}"[:64]
+        caption = f"📖 سوڕەتی {surah_name}\n🎙️ قاری: {qari_name}"
+        max_part_bytes = 40 * 1024 * 1024
+        if len(audio_data) <= max_part_bytes:
+            audio_file = io.BytesIO(audio_data)
+            audio_file.name = f"{sid:03d}.mp3"
+            await context.bot.send_audio(
+                chat_id=chat_id, audio=audio_file, title=title,
+                performer=qari_name[:64], caption=caption,
+            )
+        else:
+            if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+                raise RuntimeError("ffmpeg/ffprobe is unavailable for splitting large MP3")
+            with tempfile.TemporaryDirectory(prefix="regay-audio-") as temp_dir:
+                source = os.path.join(temp_dir, f"{sid:03d}-full.mp3")
+                with open(source, "wb") as source_file:
+                    source_file.write(audio_data)
+                probe = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                     "-of", "default=noprint_wrappers=1:nokey=1", source],
+                    capture_output=True, text=True, timeout=60, check=True,
+                )
+                duration = float(probe.stdout.strip())
+                segment_seconds = max(60, int(duration * (max_part_bytes * 0.88 / len(audio_data))))
+                pattern = os.path.join(temp_dir, "part-%03d.mp3")
+                subprocess.run(
+                    ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", source,
+                     "-map", "0:a:0", "-c", "copy", "-f", "segment",
+                     "-segment_time", str(segment_seconds), "-reset_timestamps", "1", pattern],
+                    capture_output=True, text=True, timeout=600, check=True,
+                )
+                parts = sorted(
+                    os.path.join(temp_dir, name) for name in os.listdir(temp_dir)
+                    if name.startswith("part-") and name.endswith(".mp3")
+                )
+                if len(parts) < 2 or any(os.path.getsize(path) > 48 * 1024 * 1024 for path in parts):
+                    raise RuntimeError("MP3 splitting did not produce Telegram-safe parts")
+                await status.edit_text(f"📤 قەبارەی دەنگەکە زۆرە؛ بە {len(parts)} بەش دەنێردرێت...")
+                for part_number, part_path in enumerate(parts, 1):
+                    with open(part_path, "rb") as part_file:
+                        await context.bot.send_audio(
+                            chat_id=chat_id, audio=part_file,
+                            title=f"{title} ({part_number}/{len(parts)})"[:64],
+                            performer=qari_name[:64],
+                            caption=f"{caption}\n🎧 بەشی {part_number} لە {len(parts)}",
+                        )
         try:
             await status.delete()
         except Exception:
@@ -1102,10 +1173,11 @@ async def play_qari_surah(update,context,index,sid):
             await qari_ayah_guide(update, str(item.get("id", "")), sid, 0)
         except Exception:
             log.exception("Audio was sent but the ayah timing guide could not be rendered")
-    except Exception:
+    except Exception as exc:
         log.exception("Could not download or send recitation audio: %s",audio_url)
         try:
-            await status.edit_text("⚠️ ناردنی دەنگی قورئان سەرکەوتوو نەبوو؛ تکایە دواتر دووبارە هەوڵ بدەرەوە.",
+            await status.edit_text(
+                f"⚠️ ناردنی دەنگی قورئان سەرکەوتوو نەبوو.\nهۆکار: {str(exc)[:350]}",
                 reply_markup=ik([[InlineKeyboardButton("🔙 گەڕانەوە بۆ سوڕەتەکان",callback_data=f"qr:pick:{index}")]]))
         except Exception:
             await update.effective_message.reply_text("⚠️ ناردنی دەنگی قورئان سەرکەوتوو نەبوو.")
@@ -1135,9 +1207,21 @@ async def firebase_video_profiles_menu(update, context):
     ]
     if media:
         try:
-            await context.bot.send_media_group(chat_id=update.effective_chat.id, media=media)
+            await context.bot.send_media_group(chat_id=update.effective_chat.id, media=media[:10])
         except Exception:
-            log.exception("Could not send video profile image album")
+            log.exception("Could not send video profile image album; retrying images individually")
+            for profile in profiles:
+                image_url = str(profile.get("image") or "").strip()
+                if not image_url.startswith(("https://", "http://")):
+                    continue
+                try:
+                    await context.bot.send_photo(
+                        chat_id=update.effective_chat.id,
+                        photo=image_url,
+                        caption=f"👤 {profile['name']}"[:1024],
+                    )
+                except Exception:
+                    log.warning("Could not send profile image for %s", profile.get("tag"))
     rows = [
         [InlineKeyboardButton(f"🎬 {p['name']}"[:58], callback_data=f"fbprofile:{p['tag']}")]
         for p in profiles
