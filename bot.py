@@ -183,16 +183,16 @@ async def show_favorites(update, context=None):
     rows = list_favorites(uid)
     if not rows:
         return await update.effective_message.reply_text(
-            "⭐ هێشتا هیچ ئایەتێکت زیاد نەکردووە بۆ دڵخوازەکان.",
+            "⭐ هێشتا هیچ ناوەڕۆکێکت زیاد نەکردووە بۆ دڵخوازەکان.",
             reply_markup=ik([[InlineKeyboardButton("📖 کردنەوەی قورئان", callback_data="q:s:0")]]))
     buttons = []
     for fid, sid, ayah, title in rows:
         buttons.append([
-            InlineKeyboardButton(f"⭐ {title}"[:58], callback_data=f"fv:open:{sid}:{ayah}"),
+            InlineKeyboardButton(f"⭐ {title}"[:58], callback_data=(f"fvc:open:{sid}:{ayah}" if int(sid) < 0 else f"fv:open:{sid}:{ayah}")),
             InlineKeyboardButton("🗑", callback_data=f"fv:del:{fid}")
         ])
     await update.effective_message.reply_text(
-        f"⭐ *دڵخوازەکانت*\n{len(rows)} ئایەت — بۆ کردنەوە ناوی ئایەتەکە هەڵبژێرە.",
+        f"⭐ *دڵخوازەکانت*\n{len(rows)} دانە — بۆ کردنەوە ناوەکە هەڵبژێرە.",
         reply_markup=ik(buttons), parse_mode=ParseMode.MARKDOWN)
 
 
@@ -609,6 +609,7 @@ async def show_json_item(update,context,key,index,edit=False):
             if index>0: nav.append(InlineKeyboardButton("⬅️ پێشوو",callback_data=f"j:{key}:{index-1}"))
             if index+1<len(data): nav.append(InlineKeyboardButton("دواتر ➡️",callback_data=f"j:{key}:{index+1}"))
             rows=[nav] if nav else []
+            rows.append([InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان",callback_data=f"fvc:add:{-100-list(JSON_FILES).index(key)}:{index}")])
             rows.append([InlineKeyboardButton("🔙 لیستی بابەتەکان",callback_data=f"jl:{key}:0")])
             await update.effective_message.reply_text(f"📎 {title}",reply_markup=ik(rows))
             return
@@ -624,6 +625,7 @@ async def show_json_item(update,context,key,index,edit=False):
     if index>0: nav.append(InlineKeyboardButton("⬅️ پێشوو",callback_data=f"j:{key}:{index-1}"))
     if index+1<len(data): nav.append(InlineKeyboardButton("دواتر ➡️",callback_data=f"j:{key}:{index+1}"))
     rows=[nav] if nav else []
+    rows.append([InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان",callback_data=f"fvc:add:{-100-list(JSON_FILES).index(key)}:{index}")])
     rows.append([InlineKeyboardButton("🔙 لیستی بابەتەکان",callback_data=f"jl:{key}:0")])
     if edit: await update.callback_query.edit_message_text(text[:3900],reply_markup=ik(rows),disable_web_page_preview=True)
     else: await update.effective_message.reply_text(text[:3900],reply_markup=ik(rows),disable_web_page_preview=True)
@@ -818,6 +820,7 @@ async def show_names(update,index=0):
     if index: nav.append(InlineKeyboardButton("⬅️ ناوی پێشوو",callback_data=f"nm:{index-1}"))
     if index<99: nav.append(InlineKeyboardButton("ناوی داهاتوو ➡️",callback_data=f"nm:{index+1}"))
     if nav: rows.append(nav)
+    rows.append([InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان",callback_data=f"fvc:add:-2:{index}")])
     rows.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ هەموو ناوەکان",callback_data=f"nml:{index//10}")])
     await update.effective_message.reply_text(text,reply_markup=ik(rows))
 
@@ -829,7 +832,9 @@ async def show_dua(update,index=0):
     nav=[]
     if index: nav.append(InlineKeyboardButton("⬅️",callback_data=f"du:{index-1}"))
     if index<55: nav.append(InlineKeyboardButton("➡️",callback_data=f"du:{index+1}"))
-    await update.effective_message.reply_text(text,reply_markup=ik([nav] if nav else []),parse_mode=ParseMode.MARKDOWN)
+    rows = [nav] if nav else []
+    rows.append([InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان",callback_data=f"fvc:add:-3:{index}")])
+    await update.effective_message.reply_text(text,reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
 
 async def books_menu(update, page=0, edit=False):
     """Browse the original Android book library, grouped by its 69 source categories."""
@@ -939,6 +944,7 @@ async def book_item(update, bid, list_page=0, part=0):
         buttons.append([InlineKeyboardButton("⬅️ بابەتی پێشوو", callback_data=f"bi:{sibling_ids[position-1]}:{list_page}:0")])
     if position + 1 < len(sibling_ids):
         buttons.append([InlineKeyboardButton("بابەتی داهاتوو ➡️", callback_data=f"bi:{sibling_ids[position+1]}:{list_page}:0")])
+    buttons.append([InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان", callback_data=f"fvc:add:-4:{bid}")])
     buttons.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ لیستی بابەتەکان", callback_data=f"bc:{tag}:{list_page}")])
     await update.callback_query.edit_message_text(
         text[:3900], reply_markup=ik(buttons), disable_web_page_preview=True,
@@ -1435,6 +1441,46 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         if data == "st:notify:off":
             set_prayer_notifications(q.from_user.id, False)
             return await show_settings(update)
+        if data.startswith("fvc:add:"):
+            _, _, raw_sid, raw_item = data.split(":")
+            sid, item_id = int(raw_sid), int(raw_item)
+            title = "ناوەڕۆک"
+            if sid == -2:
+                with db("name.db") as c:
+                    row = c.execute("SELECT arabic FROM name ORDER BY _id LIMIT 1 OFFSET ?", (item_id,)).fetchone()
+                title = row[0] if row else "ناوی خودا"
+            elif sid == -3:
+                title = f"دوعا {item_id+1}"
+            elif sid == -4:
+                with db("mu.db") as c:
+                    row = c.execute("SELECT sarder FROM babat WHERE _id=?", (item_id,)).fetchone()
+                title = str(row[0]) if row else "بابەتی کتێب"
+            elif sid == -5:
+                title = TASBIH_PHRASES[item_id] if 0 <= item_id < len(TASBIH_PHRASES) else "تەسبیح"
+            elif sid <= -100:
+                key_index = -100 - sid
+                keys = list(JSON_FILES)
+                key = keys[key_index] if 0 <= key_index < len(keys) else None
+                if key:
+                    items = load_json(key)
+                    if 0 <= item_id < len(items) and isinstance(items[item_id], dict):
+                        title = str(items[item_id].get("title") or items[item_id].get("name") or f"{JSON_FILES[key][0]} {item_id+1}")
+            added = add_favorite(q.from_user.id, sid, item_id, title[:180])
+            return await q.message.reply_text("⭐ ناوەڕۆکەکە زیاد کرا بۆ دڵخوازەکان." if added else "ئەم بابەتە پێشتر لە دڵخوازەکانتدا هەیە.")
+        if data.startswith("fvc:open:"):
+            _, _, raw_sid, raw_item = data.split(":")
+            sid, item_id = int(raw_sid), int(raw_item)
+            if sid == -2: return await show_names(update, item_id)
+            if sid == -3: return await show_dua(update, item_id)
+            if sid == -4: return await book_item(update, item_id)
+            if sid == -5:
+                set_tasbih_zikr(q.from_user.id, item_id)
+                return await tasbih(update, context)
+            if sid <= -100:
+                key_index = -100 - sid
+                keys = list(JSON_FILES)
+                key = keys[key_index] if 0 <= key_index < len(keys) else None
+                if key: return await show_json_item(update, context, key, item_id)
         if data.startswith("fv:add:"):
             _, _, sid, ayah = data.split(":")
             with db("regayislam.db") as c:
