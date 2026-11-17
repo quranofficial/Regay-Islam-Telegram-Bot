@@ -99,14 +99,14 @@ def _firebase_get_sync(path):
 
 async def firebase_get(path):
     try:
-        return _firebase_decode(await asyncio.to_thread(_firebase_get_sync, path))
+        return await asyncio.to_thread(_firebase_get_sync, path)
     except Exception:
         log.exception("Firebase read failed for path %s", path)
         return None
 
 
 async def firebase_live_channels():
-    value = await firebase_get("Live")
+    value = _firebase_decode(await firebase_get("Live"))
     if isinstance(value, list):
         rows = [dict(x) for x in value if isinstance(x, dict)]
     elif isinstance(value, dict):
