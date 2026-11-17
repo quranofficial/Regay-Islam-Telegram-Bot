@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, BotCommand
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
+from telegram.request import HTTPXRequest
 from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from supabase_store import (is_configured, save_user, get_city, set_city, get_qari, set_qari, is_setup_completed, set_setup_completed, save_feedback, touch_runtime_heartbeat, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user, get_tasbih_zikr, set_tasbih_zikr, get_menu_order, set_menu_order)
 
@@ -924,7 +925,10 @@ async def send_asset_file(update, context, item):
         chat_id = update.effective_chat.id
         try:
             if suffix in (".mp3", ".m4a", ".wav", ".ogg", ".flac"):
-                await context.bot.send_audio(chat_id=chat_id, audio=stream, caption=title[:1024], title=title[:64])
+                await context.bot.send_audio(
+                    chat_id=chat_id, audio=stream, caption=title[:1024], title=title[:64],
+                    read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
+                )
             elif suffix in (".mp4", ".mov", ".m4v"):
                 await context.bot.send_video(chat_id=chat_id, video=stream, caption=title[:1024], supports_streaming=True)
             elif suffix in (".jpg", ".jpeg", ".png", ".webp"):
@@ -1128,6 +1132,7 @@ async def play_qari_surah(update,context,index,sid):
             await context.bot.send_audio(
                 chat_id=chat_id, audio=audio_file, title=title,
                 performer=qari_name[:64], caption=caption,
+                read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
             )
         else:
             if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
@@ -1164,6 +1169,7 @@ async def play_qari_surah(update,context,index,sid):
                             title=f"{title} ({part_number}/{len(parts)})"[:64],
                             performer=qari_name[:64],
                             caption=f"{caption}\n🎧 بەشی {part_number} لە {len(parts)}",
+                            read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
                         )
         try:
             await status.delete()
@@ -2343,7 +2349,16 @@ def main():
         raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables are required.")
     # Process independent updates concurrently instead of making every user
     # wait behind a slow network/database operation from another update.
-    app=Application.builder().token(TOKEN).post_init(post_init).concurrent_updates(16).build()
+    # Large MP3 uploads need longer HTTPX write/read timeouts than Telegram's defaults.
+    telegram_request = HTTPXRequest(
+        connection_pool_size=32,
+        connect_timeout=30,
+        read_timeout=180,
+        write_timeout=300,
+        pool_timeout=30,
+    )
+    app=(Application.builder().token(TOKEN).request(telegram_request)
+         .post_init(post_init).concurrent_updates(16).build())
     app.add_handler(MessageHandler(filters.ALL, membership_gate), group=-2)
     app.add_handler(CallbackQueryHandler(membership_gate), group=-2)
     app.add_handler(MessageHandler(filters.ALL, block_banned), group=-1)
