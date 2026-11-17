@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, BotCommand
 from telegram.constants import ParseMode
 from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from supabase_store import (is_configured, save_user, get_city, set_city, get_qari, set_qari, is_setup_completed, set_setup_completed, save_feedback, touch_runtime_heartbeat, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user, get_tasbih_zikr, set_tasbih_zikr, get_menu_order, set_menu_order)
@@ -1066,13 +1066,22 @@ async def firebase_video_profiles_menu(update):
     profiles = await firebase_video_profiles()
     if not profiles:
         return await update.effective_message.reply_text("هیچ پرۆفایلێک لە Firebase نەدۆزرایەوە.")
-    # One compact keyboard replaces nine separately rate-limited photo messages.
+    # Deliver all nine profile images in one album, then show one fast name-based menu.
+    media = [
+        InputMediaPhoto(p["image"], caption=f"👤 {p['name']}"[:1024])
+        for p in profiles if str(p.get("image") or "").startswith(("https://", "http://"))
+    ]
+    if media:
+        try:
+            await context.bot.send_media_group(chat_id=update.effective_chat.id, media=media)
+        except Exception:
+            log.exception("Could not send video profile image album")
     rows = [
         [InlineKeyboardButton(f"🎬 {p['name']}"[:58], callback_data=f"fbprofile:{p['tag']}")]
         for p in profiles
     ]
     await update.effective_message.reply_text(
-        "🎞️ *ڤیدیۆی ئاینی*\n\nپرۆفایلێک هەڵبژێرە بۆ بینینی ڤیدیۆکانی:",
+        "🎞️ *ڤیدیۆی ئاینی*\n\nپرۆفایلێک لە لیستی ناوەکان هەڵبژێرە بۆ بینینی ڤیدیۆکانی:",
         reply_markup=ik(rows), parse_mode=ParseMode.MARKDOWN,
     )
 
