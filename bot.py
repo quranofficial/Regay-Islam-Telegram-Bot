@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar, hashlib, time, shutil, subprocess, tempfile
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
@@ -2363,6 +2364,11 @@ async def runtime_heartbeat_loop():
 
 
 async def post_init(app):
+    # Supabase/Firebase and media I/O run in worker threads; size the pool
+    # for the bot's concurrent update capacity instead of the small CPU default.
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(max_workers=64, thread_name_prefix="regay-worker")
+    )
     try:
         await asyncio.to_thread(touch_runtime_heartbeat, "running")
     except Exception:
@@ -2403,14 +2409,14 @@ def main():
     # wait behind a slow network/database operation from another update.
     # Large MP3 uploads need longer HTTPX write/read timeouts than Telegram's defaults.
     telegram_request = HTTPXRequest(
-        connection_pool_size=64,
+        connection_pool_size=128,
         connect_timeout=30,
         read_timeout=180,
         write_timeout=300,
         pool_timeout=30,
     )
     app=(Application.builder().token(TOKEN).request(telegram_request)
-         .post_init(post_init).concurrent_updates(32).build())
+         .post_init(post_init).concurrent_updates(64).build())
     app.add_handler(MessageHandler(filters.ALL, membership_gate), group=-2)
     app.add_handler(CallbackQueryHandler(membership_gate), group=-2)
     app.add_handler(MessageHandler(filters.ALL, block_banned), group=-1)
