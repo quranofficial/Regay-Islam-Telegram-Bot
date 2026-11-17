@@ -1586,12 +1586,18 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             remove_favorite(q.from_user.id, int(data.split(":")[2]))
             return await show_favorites(update)
         if data.startswith("qp:"): return await show_quran_page(update,int(data.split(":")[1]),True)
-        if data == "ms:list": return await show_mushaf_surah_list(update,0,True)
-        if data.startswith("ms:list:"): return await show_mushaf_surah_list(update,int(data.split(":")[2]),True)
+        if data == "ms:list":
+            context.user_data.pop("mushaf_waiting_page", None)
+            return await show_mushaf_surah_list(update,0,True)
+        if data.startswith("ms:list:"):
+            context.user_data.pop("mushaf_waiting_page", None)
+            return await show_mushaf_surah_list(update,int(data.split(":")[2]),True)
         if data == "ms:number":
             context.user_data["mushaf_waiting_page"] = True
             return await q.message.reply_text("ژمارەی پەڕەکە لە ١ تا ٦٠٤ بنووسە:")
-        if data.startswith("ms:"): return await show_mushaf_surah_pages(update,int(data.split(":")[1]),0,True)
+        if data.startswith("ms:"):
+            context.user_data.pop("mushaf_waiting_page", None)
+            return await show_mushaf_surah_pages(update,int(data.split(":")[1]),0,True)
         if data.startswith("msp:"):
             _,sid,page=data.split(":"); return await show_mushaf_surah_pages(update,int(sid),int(page),True)
         if data.startswith("mpg:"): return await show_quran_page(update,int(data.split(":")[1]),False)
