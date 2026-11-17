@@ -641,11 +641,9 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         if data == "st:city": return await prayer_city_list(update, mode="prayer")
         if data == "st:notify:on":
             set_prayer_notifications(q.from_user.id, True)
-            await q.answer("🔔 ئاگادارکردنەوەی کاتی بانگ چالاک کرا.")
             return await show_settings(update)
         if data == "st:notify:off":
             set_prayer_notifications(q.from_user.id, False)
-            await q.answer("🔕 ئاگادارکردنەوەی کاتی بانگ ناچالاک کرا.")
             return await show_settings(update)
         if data.startswith("fv:add:"):
             _, _, sid, ayah = data.split(":")
