@@ -232,7 +232,7 @@ async def show_settings(update, context=None):
     qari_id = get_qari(uid)
     qari = next((r.get("name_ar", "نەزانراو") for r in load_json("dangakan")
                  if isinstance(r, dict) and str(r.get("id")) == str(qari_id)), "هەڵنەبژێردراو")
-    row = get_tasbih(uid)
+    row = get_tasbih(uid, get_tasbih_zikr(uid))
     tasbih_count = row[0] if row else 0
     notifications = get_prayer_notifications(uid)
     notify_label = "🟢 چالاکە" if notifications else "🔴 ناچالاکە"
@@ -378,7 +378,7 @@ async def show_quran_page(update, page=1, edit=False):
     if rows:
         save_last_read(update.effective_user.id, rows[0], max(0, int(rows[1]) - 1))
         buttons.append([InlineKeyboardButton("🎧 گوێگرتن بە قاریی هەڵبژێردراو", callback_data=f"qaudio:{rows[0]}")])
-    buttons.append([InlineKeyboardButton("📖 لیستی سوڕەتەکان", callback_data="q:s:0")])
+    buttons.append([InlineKeyboardButton("📚 لیستی سووڕەتەکان", callback_data="ms:list:0")])
     markup = ik(buttons)
 
     if edit:
@@ -1627,7 +1627,7 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             bits=data.split(":")
             return await book_item(update,int(bits[1]),int(bits[2]) if len(bits)>2 else 0,int(bits[3]) if len(bits)>3 else 0)
         if data == "ts:reset":
-            reset_tasbih(q.from_user.id)
+            reset_tasbih(q.from_user.id, get_tasbih_zikr(q.from_user.id))
             return await tasbih(update,context,0,True)
         if data.startswith("ts:"):
             n=1 if data.endswith("+") else 0
