@@ -1,6 +1,6 @@
 """ڕێگای ئیسلام — Telegram edition, built from the supplied Android app data."""
 from __future__ import annotations
-import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar, hashlib
+import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar, hashlib, time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from datetime import datetime, date, timedelta
@@ -145,12 +145,20 @@ def download_cached_bytes(url, max_bytes, timeout):
     return data
 
 
+_firebase_cache = {}
+
 async def firebase_get(path):
+    now = time.monotonic()
+    cached = _firebase_cache.get(path)
+    if cached and now - cached[0] < 20:
+        return cached[1]
     try:
-        return await asyncio.to_thread(_firebase_get_sync, path)
+        value = await asyncio.to_thread(_firebase_get_sync, path)
+        _firebase_cache[path] = (now, value)
+        return value
     except Exception:
         log.exception("Firebase read failed for path %s", path)
-        return None
+        return cached[1] if cached else None
 
 
 async def firebase_live_channels():
@@ -225,8 +233,15 @@ MENU_ITEMS = {
 DEFAULT_MENU_ORDER = list(MENU_ITEMS)
 
 
+_menu_order_cache = {}
+
+async def load_menu_order(uid):
+    order = await asyncio.to_thread(get_menu_order, uid)
+    _menu_order_cache[uid] = order
+    return order
+
 def main_keyboard(uid=None):
-    order = get_menu_order(uid) if uid is not None else []
+    order = _menu_order_cache.get(uid, []) if uid is not None else []
     valid = [key for key in order if key in MENU_ITEMS]
     keys = valid + [key for key in DEFAULT_MENU_ORDER if key not in valid]
     buttons = [KeyboardButton(MENU_ITEMS[key]) for key in keys]
@@ -260,11 +275,19 @@ def channel_join_markup():
         [InlineKeyboardButton("🔄 پشکنین", callback_data="channel:check")],
     ])
 
-async def is_channel_member(bot, user_id):
+_membership_cache = {}
+
+async def is_channel_member(bot, user_id, force=False):
+    now = time.monotonic()
+    cached = _membership_cache.get(user_id)
+    if not force and cached and now - cached[0] < cached[1]:
+        return cached[2]
     member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
-    return member.status in ("member", "administrator", "creator") or (
+    joined = member.status in ("member", "administrator", "creator") or (
         member.status == "restricted" and bool(getattr(member, "is_member", False))
     )
+    _membership_cache[user_id] = (now, 60 if joined else 8, joined)
+    return joined
 
 async def membership_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -273,7 +296,7 @@ async def membership_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if query and query.data == "channel:check":
         try:
-            joined = await is_channel_member(context.bot, user.id)
+            joined = await is_channel_member(context.bot, user.id, force=True)
         except Exception:
             log.exception("Could not verify channel membership for user %s", user.id)
             await query.answer("پشکنینی ئەندامبوون سەرکەوتوو نەبوو؛ تکایە دواتر هەوڵ بدەرەوە.", show_alert=True)
@@ -313,6 +336,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # can keep responding to other users while this user's profile is saved.
     await asyncio.to_thread(save_user, user.id, user.first_name or "", user.username or "")
     setup_completed = await asyncio.to_thread(is_setup_completed, user.id)
+    await load_menu_order(user.id)
     if not setup_completed:
         await update.effective_message.reply_text(
             "🕌 بەخێربێیت بۆ بۆتی ڕێگای ئیسلام\n\n"
@@ -374,8 +398,11 @@ def setup_qari_menu(update, page=0, edit=False, settings=False):
 
 
 async def finish_setup(update, uid, qari_id, settings=False):
-    set_qari(uid, str(qari_id))
-    set_setup_completed(uid, True)
+    await asyncio.gather(
+        asyncio.to_thread(set_qari, uid, str(qari_id)),
+        asyncio.to_thread(set_setup_completed, uid, True),
+    )
+    await load_menu_order(uid)
     if settings:
         return await update.callback_query.edit_message_text("✅ قاریی دڵخوازت پاشەکەوت کرا.")
     await update.callback_query.edit_message_text(
@@ -386,7 +413,7 @@ async def finish_setup(update, uid, qari_id, settings=False):
 
 async def show_favorites(update, context=None):
     uid = update.effective_user.id
-    rows = list_favorites(uid)
+    rows = await asyncio.to_thread(list_favorites, uid)
     if not rows:
         return await update.effective_message.reply_text(
             "⭐ هێشتا هیچ ناوەڕۆکێکت زیاد نەکردووە بۆ دڵخوازەکان.",
@@ -403,7 +430,7 @@ async def show_favorites(update, context=None):
 
 
 async def show_last_read(update, context=None):
-    row = get_last_read(update.effective_user.id)
+    row = await asyncio.to_thread(get_last_read, update.effective_user.id)
     if not row:
         return await update.effective_message.reply_text(
             "📍 هێشتا شوێنی خوێندنەوەیەکت تۆمار نەکراوە. سوڕەتێک بکەرەوە و خوێندنەوەت دەست پێ بکە.")
@@ -412,7 +439,7 @@ async def show_last_read(update, context=None):
 
 async def show_menu_order(update, edit=False):
     uid = update.effective_user.id
-    saved = get_menu_order(uid)
+    saved = await load_menu_order(uid)
     order = [key for key in saved if key in MENU_ITEMS]
     order += [key for key in DEFAULT_MENU_ORDER if key not in order]
     rows = []
@@ -433,14 +460,15 @@ async def show_menu_order(update, edit=False):
 
 async def show_settings(update, context=None):
     uid = update.effective_user.id
-    city = get_city(uid)
+    city, qari_id, zikr_index, notifications = await asyncio.gather(
+        asyncio.to_thread(get_city, uid), asyncio.to_thread(get_qari, uid),
+        asyncio.to_thread(get_tasbih_zikr, uid), asyncio.to_thread(get_prayer_notifications, uid),
+    )
     city_label = city_display_name(city) if city else "دیاری نەکراوە"
-    qari_id = get_qari(uid)
     qari = next((r.get("name_ar", "نەزانراو") for r in load_json("dangakan")
                  if isinstance(r, dict) and str(r.get("id")) == str(qari_id)), "هەڵنەبژێردراو")
-    row = get_tasbih(uid, get_tasbih_zikr(uid))
+    row = await asyncio.to_thread(get_tasbih, uid, zikr_index)
     tasbih_count = row[0] if row else 0
-    notifications = get_prayer_notifications(uid)
     notify_label = "🟢 چالاکە" if notifications else "🔴 ناچالاکە"
     notify_action = "off" if notifications else "on"
     await update.effective_message.reply_text(
@@ -585,7 +613,7 @@ async def show_quran_page(update, page=1, edit=False):
     if nav:
         buttons.append(nav)
     if rows:
-        save_last_read(update.effective_user.id, rows[0], max(0, int(rows[1]) - 1))
+        await asyncio.to_thread(save_last_read, update.effective_user.id, rows[0], max(0, int(rows[1]) - 1))
         buttons.append([InlineKeyboardButton("🎧 گوێگرتن بە قاریی هەڵبژێردراو", callback_data=f"qaudio:{rows[0]}")])
     buttons.append([InlineKeyboardButton("📚 لیستی سووڕەتەکان", callback_data="ms:list:0")])
     markup = ik(buttons)
@@ -669,7 +697,7 @@ async def show_ayat_kursi(update):
 
 
 async def show_ayahs(update, sid, offset=0, edit=False):
-    save_last_read(update.effective_user.id, sid, offset)
+    await asyncio.to_thread(save_last_read, update.effective_user.id, sid, offset)
     with db("regayislam.db") as c:
         rows=c.execute("SELECT sura_name_ar,ayah,text,rebar,raman,puxta,asan,sanahi,hazhar,zhin,maiser,roshn,tawhid FROM ayah_text WHERE suraId=? ORDER BY ayah LIMIT 8 OFFSET ?",(sid,offset)).fetchall()
     if not rows:
@@ -696,7 +724,7 @@ async def show_ayahs(update, sid, offset=0, edit=False):
     else: await update.effective_message.reply_text(text,reply_markup=ik(buttons),parse_mode=ParseMode.MARKDOWN)
 
 async def show_tafsir(update,sid,ayah,selected=None):
-    save_last_read(update.effective_user.id, sid, ((ayah-1)//8)*8)
+    await asyncio.to_thread(save_last_read, update.effective_user.id, sid, ((ayah-1)//8)*8)
     with db("regayislam.db") as c:
         r=c.execute("SELECT sura_name_ar,text,rebar,raman,puxta,asan,sanahi,hazhar,zhin,maiser,roshn,tawhid FROM ayah_text WHERE suraId=? AND ayah=?",(sid,ayah)).fetchone()
     if not r: return await update.callback_query.answer("ئایەت نەدۆزرایەوە",show_alert=True)
@@ -798,7 +826,7 @@ async def prayer_times(update, city, edit=False):
 async def monthly_prayer_times(update, city=None, month=None, edit=False):
     """Show the original Android app's month-view prayer timetable."""
     if not city:
-        city = get_city(update.effective_user.id)
+        city = await asyncio.to_thread(get_city, update.effective_user.id)
     if not city:
         await prayer_city_list(update, mode="month")
         return
@@ -973,7 +1001,7 @@ async def show_qari_menu(update,page=0,edit=False):
     reciters=[r for r in load_json("dangakan") if isinstance(r,dict) and str(r.get("doxx"," ")).lower()=="true" and r.get("url")]
     start=page*10
     rows=[]
-    selected_qari = get_qari(update.effective_user.id)
+    selected_qari = await asyncio.to_thread(get_qari, update.effective_user.id)
     for i,item in enumerate(reciters[start:start+10],start=start):
         label=str(item.get("name_ar") or f"قاری {i+1}").strip()
         if str(item.get("id")) == str(selected_qari):
@@ -1083,7 +1111,7 @@ async def play_qari_surah(update,context,index,sid):
             await update.effective_message.reply_text("⚠️ ناردنی دەنگی قورئان سەرکەوتوو نەبوو.")
 
 async def play_default_qari(update, context, sid):
-    selected_id = get_qari(update.effective_user.id)
+    selected_id = await asyncio.to_thread(get_qari, update.effective_user.id)
     reciters = [r for r in load_json("dangakan")
                 if isinstance(r, dict) and str(r.get("doxx", "")).lower() == "true" and r.get("url")]
     index = next((i for i, item in enumerate(reciters)
@@ -1478,10 +1506,10 @@ async def tasbih_picker(update, page=0, edit=False):
 
 async def tasbih(update, context, change=0, edit=False):
     uid = update.effective_user.id
-    zikr_index = get_tasbih_zikr(uid)
+    zikr_index = await asyncio.to_thread(get_tasbih_zikr, uid)
     if zikr_index < 0 or zikr_index >= len(TASBIH_PHRASES):
         return await tasbih_picker(update, 0, edit)
-    count = change_tasbih(uid, change, zikr_index) if change else (get_tasbih(uid, zikr_index) or (0,))[0]
+    count = await asyncio.to_thread(change_tasbih, uid, change, zikr_index) if change else (await asyncio.to_thread(get_tasbih, uid, zikr_index) or (0,))[0]
     phrase = TASBIH_PHRASES[zikr_index]
     text = f"📿 تەسبیح\n\n{phrase}\n\nژمارە: {count}"
     rows = [
@@ -1726,7 +1754,7 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         return await setup_qari_menu(update, int(data.split(":")[2]), True)
     if data.startswith("setup:city:"):
         city = data.split(":", 2)[2]
-        set_city(q.from_user.id, city)
+        await asyncio.to_thread(set_city, q.from_user.id, city)
         if context.user_data.pop("settings_city_flow", False):
             return await q.edit_message_text("✅ شاری نوێ پاشەکەوت کرا.")
         return await setup_qari_menu(update)
@@ -1738,7 +1766,7 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         return await setup_city_menu(update, 0, True)
     if data.startswith("st:notify:"):
         enabled = data.endswith(":on")
-        set_prayer_notifications(q.from_user.id, enabled)
+        await asyncio.to_thread(set_prayer_notifications, q.from_user.id, enabled)
         return await q.edit_message_text("✅ ئاگادارکردنەوەی بانگ چالاک کرا." if enabled else "🔕 ئاگادارکردنەوەی بانگ ناچالاک کرا.")
     if data == "st:qari:menu":
         return await setup_qari_menu(update, 0, True, True)
@@ -1746,7 +1774,7 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         return await setup_qari_menu(update, int(data.split(":")[2]), True, True)
     if data.startswith("st:qari:"):
         rid = data.split(":")[2]
-        set_qari(q.from_user.id, rid)
+        await asyncio.to_thread(set_qari, q.from_user.id, rid)
         return await q.edit_message_text("✅ قاریی دڵخوازت پاشەکەوت کرا.")
     if data.startswith("fb:cat:"):
         category = data.split(":")[2]
@@ -1775,20 +1803,21 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         index = int(data.split(":")[2])
         if not 0 <= index < len(TASBIH_PHRASES):
             return await q.answer("زیکرەکە نەدۆزرایەوە.", show_alert=True)
-        set_tasbih_zikr(q.from_user.id, index)
+        await asyncio.to_thread(set_tasbih_zikr, q.from_user.id, index)
         return await tasbih(update, context, 0, True)
     if data == "mo:open":
         return await show_menu_order(update, True)
     if data.startswith("mo:up:") or data.startswith("mo:down:"):
         _, direction, key = data.split(":", 2)
-        order = get_menu_order(q.from_user.id)
+        order = await load_menu_order(q.from_user.id)
         order = [item for item in order if item in MENU_ITEMS]
         order += [item for item in DEFAULT_MENU_ORDER if item not in order]
         index = order.index(key) if key in order else 0
         target = index - 1 if direction == "up" else index + 1
         if 0 <= target < len(order):
             order[index], order[target] = order[target], order[index]
-        set_menu_order(q.from_user.id, order)
+        _menu_order_cache[q.from_user.id] = order
+        await asyncio.to_thread(set_menu_order, q.from_user.id, order)
         return await show_menu_order(update, True)
     if data == "mo:done":
         await q.edit_message_text("✅ ڕیزبەندی مێنیوەکەت پاشەکەوت کرا.")
@@ -1809,10 +1838,10 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         if len(bits) == 3 and bits[1] == "users":
             return await admin_users(update, int(bits[2]), True)
         if len(bits) == 3 and bits[1] == "ban":
-            uid = int(bits[2]); ban_user(uid, "لە لایەن بەڕێوەبەرەوە")
+            uid = int(bits[2]); await asyncio.to_thread(ban_user, uid, "لە لایەن بەڕێوەبەرەوە")
             return await q.edit_message_text(f"⛔ بەکارهێنەری {uid} بەند کرا.", reply_markup=ik([[InlineKeyboardButton("🔙 لیست", callback_data="ad:users:0")]]))
         if len(bits) == 3 and bits[1] == "unban":
-            uid = int(bits[2]); unban_user(uid)
+            uid = int(bits[2]); await asyncio.to_thread(unban_user, uid)
             return await q.edit_message_text(f"🔓 بەندی بەکارهێنەری {uid} لابرا.", reply_markup=ik([[InlineKeyboardButton("🔙 لیست", callback_data="ad:users:0")]]))
         if data == "ad:broadcast":
             context.user_data["admin_broadcast_waiting"] = True
@@ -1839,10 +1868,10 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         if data == "fv:list": return await show_favorites(update)
         if data == "st:city": return await prayer_city_list(update, mode="prayer")
         if data == "st:notify:on":
-            set_prayer_notifications(q.from_user.id, True)
+            await asyncio.to_thread(set_prayer_notifications, q.from_user.id, True)
             return await show_settings(update)
         if data == "st:notify:off":
-            set_prayer_notifications(q.from_user.id, False)
+            await asyncio.to_thread(set_prayer_notifications, q.from_user.id, False)
             return await show_settings(update)
         if data.startswith("fvc:add:"):
             _, _, raw_sid, raw_item = data.split(":")
@@ -1885,7 +1914,7 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
                     items = load_json(key)
                     if 0 <= item_id < len(items) and isinstance(items[item_id], dict):
                         title = str(items[item_id].get("title") or items[item_id].get("name") or f"{JSON_FILES[key][0]} {item_id+1}")
-            added = add_favorite(q.from_user.id, sid, item_id, title[:180])
+            added = await asyncio.to_thread(add_favorite, q.from_user.id, sid, item_id, title[:180])
             return await q.message.reply_text("⭐ ناوەڕۆکەکە زیاد کرا بۆ دڵخوازەکان." if added else "ئەم بابەتە پێشتر لە دڵخوازەکانتدا هەیە.")
         if data.startswith("fvc:open:"):
             _, _, raw_sid, raw_item = data.split(":")
@@ -1894,7 +1923,7 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             if sid == -3: return await show_dua(update, item_id)
             if sid == -4: return await book_item(update, item_id)
             if sid == -5:
-                set_tasbih_zikr(q.from_user.id, item_id)
+                await asyncio.to_thread(set_tasbih_zikr, q.from_user.id, item_id)
                 return await tasbih(update, context)
             if sid == -6:
                 return await pdf_book_item(update, item_id)
@@ -1918,13 +1947,13 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             with db("regayislam.db") as c:
                 name = c.execute("SELECT sura_name_ar FROM ayah_text WHERE suraId=? AND ayah=?", (int(sid), int(ayah))).fetchone()
             title = f"{name[0] if name else 'قورئان'} — ئایەتی {ayah}"
-            added = add_favorite(q.from_user.id, int(sid), int(ayah), title)
+            added = await asyncio.to_thread(add_favorite, q.from_user.id, int(sid), int(ayah), title)
             return await q.message.reply_text("⭐ ئایەتەکە زیاد کرا بۆ دڵخوازەکان." if added else "ئەم ئایەتە پێشتر لە دڵخوازەکانتدا هەیە.")
         if data.startswith("fv:open:"):
             _, _, sid, ayah = data.split(":")
             return await show_tafsir(update, int(sid), int(ayah))
         if data.startswith("fv:del:"):
-            remove_favorite(q.from_user.id, int(data.split(":")[2]))
+            await asyncio.to_thread(remove_favorite, q.from_user.id, int(data.split(":")[2]))
             return await show_favorites(update)
         if data.startswith("qp:"): return await show_quran_page(update,int(data.split(":")[1]),True)
         if data == "ms:list":
@@ -1977,7 +2006,8 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             bits=data.split(":")
             return await book_item(update,int(bits[1]),int(bits[2]) if len(bits)>2 else 0,int(bits[3]) if len(bits)>3 else 0)
         if data == "ts:reset":
-            reset_tasbih(q.from_user.id, get_tasbih_zikr(q.from_user.id))
+            zikr_index = await asyncio.to_thread(get_tasbih_zikr, q.from_user.id)
+            await asyncio.to_thread(reset_tasbih, q.from_user.id, zikr_index)
             return await tasbih(update,context,0,True)
         if data.startswith("ts:"):
             n=1 if data.endswith("+") else 0
@@ -2012,7 +2042,7 @@ def admin_keyboard():
 
 
 async def admin_users(update, page=0, edit=False):
-    rows = list_users(10, page * 10)
+    rows = await asyncio.to_thread(list_users, 10, page * 10)
     buttons = []
     lines = ["👥 لیستی بەکارهێنەران"]
     for row in rows:
@@ -2020,7 +2050,7 @@ async def admin_users(update, page=0, edit=False):
         name = (row.get("name") or "بێ ناو").replace("\n", " ")[:30]
         username = ("@" + row["username"]) if row.get("username") else "بێ یوزەرنەیم"
         lines.append(f"\n• {name} — {username}\nID: {uid}")
-        action = "unban" if is_banned(uid) else "ban"
+        action = "unban" if await asyncio.to_thread(is_banned, uid) else "ban"
         label = "🔓 لابردنی بەند" if action == "unban" else "⛔ بەندکردن"
         buttons.append([InlineKeyboardButton(f"{label}: {uid}", callback_data=f"ad:{action}:{uid}")])
     nav = []
@@ -2034,7 +2064,7 @@ async def admin_users(update, page=0, edit=False):
 
 
 async def admin_stats(update, edit=False):
-    stats = get_admin_stats()
+    stats = await asyncio.to_thread(get_admin_stats)
     text = ("📊 ئاماری بۆت\n\n"
             f"👥 بەکارهێنەران: {stats['users']}\n"
             f"⭐ دڵخوازەکان: {stats['favorites']}\n"
@@ -2062,26 +2092,26 @@ async def cmd_admin(update,context):
         return await update.effective_message.reply_text("⛔ دەسەڵاتی بەڕێوەبەریت نییە.")
     args = context.args
     if args and args[0] == "ban" and len(args) > 1:
-        uid = int(args[1]); ban_user(uid, "لە لایەن بەڕێوەبەرەوە")
+        uid = int(args[1]); await asyncio.to_thread(ban_user, uid, "لە لایەن بەڕێوەبەرەوە")
         return await update.effective_message.reply_text(f"⛔ بەکارهێنەری {uid} بەند کرا.")
     if args and args[0] == "unban" and len(args) > 1:
-        uid = int(args[1]); unban_user(uid)
+        uid = int(args[1]); await asyncio.to_thread(unban_user, uid)
         return await update.effective_message.reply_text(f"🔓 بەندی بەکارهێنەری {uid} لابرا.")
     if args and args[0] == "broadcast":
         context.user_data["admin_broadcast_waiting"] = True
         return await update.effective_message.reply_text("📢 تکایە پەیامەکە بنووسە. بۆ هەڵوەشاندنەوە /cancel بنووسە.")
     await update.effective_message.reply_text(
-        f"🛠 بەشی بەڕێوەبەر\n\n👥 ژمارەی بەکارهێنەران: {get_user_count()}\n📖 ئایەت: 6236\n📚 فەرموودە: 400",
+        f"🛠 بەشی بەڕێوەبەر\n\n👥 ژمارەی بەکارهێنەران: {await asyncio.to_thread(get_user_count)}\n📖 ئایەت: 6236\n📚 فەرموودە: 400",
         reply_markup=admin_keyboard())
 
 
 async def admin_broadcast(update, context, message):
     context.user_data.pop("admin_broadcast_waiting", None)
-    users = list_users(10000, 0)
+    users = await asyncio.to_thread(list_users, 10000, 0)
     sent = failed = 0
     for row in users:
         uid = int(row["user_id"])
-        if is_banned(uid): continue
+        if await asyncio.to_thread(is_banned, uid): continue
         try:
             await context.bot.send_message(chat_id=uid, text=message)
             sent += 1
@@ -2093,7 +2123,7 @@ async def admin_broadcast(update, context, message):
 
 async def block_banned(update, context):
     user = update.effective_user
-    if user and is_banned(user.id):
+    if user and await asyncio.to_thread(is_banned, user.id):
         if update.callback_query:
             await update.callback_query.answer("⛔ دەستگەیشتنت بە بۆت سنووردار کراوە.", show_alert=True)
         elif update.effective_message:
@@ -2206,6 +2236,7 @@ async def post_init(app):
 async def menu_cmd(update,context):
     user = update.effective_user
     await asyncio.to_thread(save_user, user.id, user.first_name or "", user.username or "")
+    await load_menu_order(user.id)
     await update.effective_message.reply_text("📚 *مێنیوی سەرەکی*\n\n👇 بەشی دڵخوازت هەڵبژێرە بۆ دەستپێکردن.", reply_markup=main_keyboard(user.id), parse_mode=ParseMode.MARKDOWN)
 
 
@@ -2213,7 +2244,7 @@ async def hide_menu_cmd(update,context):
     await update.effective_message.reply_text("مێنیوی سەرەکی شاردراوەتەوە.\n\n📌 بۆ پیشاندانی دووبارە، /menu بنووسە.", reply_markup=ReplyKeyboardRemove())
 async def quran_cmd(update,context): await show_suras(update)
 async def prayer_cmd(update,context):
-    city=get_city(update.effective_user.id)
+    city=await asyncio.to_thread(get_city, update.effective_user.id)
     if city: await prayer_times(update,city)
     else: await prayer_city_list(update)
 async def help_cmd(update,context):
