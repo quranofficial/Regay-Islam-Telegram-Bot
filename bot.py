@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from telegram.constants import ParseMode
 from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from supabase_store import (is_configured, save_user, get_city, set_city, get_qari, set_qari, is_setup_completed, set_setup_completed, save_feedback, touch_runtime_heartbeat, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user)
+from supabase_store import (is_configured, save_user, get_city, set_city, get_qari, set_qari, is_setup_completed, set_setup_completed, save_feedback, touch_runtime_heartbeat, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user, get_tasbih_zikr, set_tasbih_zikr, get_menu_order, set_menu_order)
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -60,20 +60,29 @@ def load_json(key: str) -> list:
 def db(name: str):
     return sqlite3.connect(f"file:{DATA / name}?mode=ro", uri=True, timeout=10)
 
-def main_keyboard():
-    return ReplyKeyboardMarkup([
-        [KeyboardButton("📖 قورئانی پیرۆز"), KeyboardButton("🕌 کاتەکانی بانگ")],
-        [KeyboardButton("🕋 ئایەتی کورسی"), KeyboardButton("📖 مصحەف پەڕە بە پەڕە")],
-        [KeyboardButton("🗓 کاتەکانی بانگی مانگانە")],
-        [KeyboardButton("🧭 ئاراستەی قیبلە"), KeyboardButton("📿 تەسبیح و زیکر")],
-        [KeyboardButton("🤲 دوعاکان"), KeyboardButton("📚 کتێب و فەرموودە")],
-        [KeyboardButton("📚 کتێبخانەی PDF"), KeyboardButton("💬 پێشنیار و ڕەخنە")],
-        [KeyboardButton("🌙 ڕەمەزان"), KeyboardButton("✨ ناوەکانی خودا")],
-        [KeyboardButton("🧠 تاقیکردنەوە"), KeyboardButton("🎙️ قارییەکان")],
-        [KeyboardButton("🔎 گەڕان"), KeyboardButton("📚 هەموو بابەتەکان")],
-        [KeyboardButton("⭐ دڵخوازەکان"), KeyboardButton("📍 دوا خوێندنەوە")],
-        [KeyboardButton("⚙️ ڕێکخستن"), KeyboardButton("ℹ️ دەربارەی بۆت")]
-    ], resize_keyboard=True, is_persistent=True)
+MENU_ITEMS = {
+    "quran": "📖 قورئانی پیرۆز", "prayer": "🕌 کاتەکانی بانگ",
+    "kursi": "🕋 ئایەتی کورسی", "mushaf": "📖 مصحەف پەڕە بە پەڕە",
+    "monthly": "🗓 کاتەکانی بانگی مانگانە", "qibla": "🧭 ئاراستەی قیبلە",
+    "tasbih": "📿 تەسبیح و زیکر", "dua": "🤲 دوعاکان",
+    "hadith": "📜 فەرموودەکان", "pdf": "📚 کتێبخانەی PDF",
+    "feedback": "💬 پێشنیار و ڕەخنە", "ramadan": "🌙 ڕەمەزان",
+    "names": "✨ ناوەکانی خودا", "quiz": "🧠 تاقیکردنەوە",
+    "reciters": "🎙️ قارییەکان", "search": "🔎 گەڕان",
+    "topics": "📚 هەموو بابەتەکان", "favorites": "⭐ دڵخوازەکان",
+    "lastread": "📍 دوا خوێندنەوە", "settings": "⚙️ ڕێکخستن",
+    "about": "ℹ️ دەربارەی بۆت",
+}
+DEFAULT_MENU_ORDER = list(MENU_ITEMS)
+
+
+def main_keyboard(uid=None):
+    order = get_menu_order(uid) if uid is not None else []
+    valid = [key for key in order if key in MENU_ITEMS]
+    keys = valid + [key for key in DEFAULT_MENU_ORDER if key not in valid]
+    buttons = [KeyboardButton(MENU_ITEMS[key]) for key in keys]
+    rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
 
 def ik(rows):
     return InlineKeyboardMarkup(rows)
@@ -282,6 +291,25 @@ async def show_quran_page(update, page=1, edit=False):
         await update.effective_message.reply_text(text[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
 
 
+async def send_ayat_kursi_audio(update, context):
+    audio_url = "https://cdn.islamic.network/quran/audio/128/ar.alafasy/262.mp3"
+    try:
+        def download():
+            request = urllib.request.Request(audio_url, headers={"User-Agent": "Regay-Islam-Telegram-Bot/1.0"})
+            with urllib.request.urlopen(request, timeout=30) as response:
+                data = response.read(15*1024*1024+1)
+            if not data or len(data) > 15*1024*1024:
+                raise ValueError("Ayat audio file is empty or too large")
+            return data
+        data = await asyncio.to_thread(download)
+        audio = io.BytesIO(data)
+        audio.name = "ayat-al-kursi.mp3"
+        await context.bot.send_audio(chat_id=update.effective_chat.id, audio=audio, title="Ayat al-Kursi — Mishary Alafasy", performer="مشاري العفاسي", caption="🕋 ئایەتی کورسی — البقرة ٢:٢٥٥")
+    except Exception:
+        log.exception("Ayat al-Kursi audio delivery failed")
+        await update.effective_message.reply_text("⚠️ ناردنی دەنگی ئایەتی کورسی سەرکەوتوو نەبوو.")
+
+
 async def show_ayat_kursi(update):
     """Open Ayat al-Kursi directly from the original Quran database."""
     with db("regayislam.db") as conn:
@@ -293,7 +321,10 @@ async def show_ayat_kursi(update):
     name, ayah, arabic = row
     await update.effective_message.reply_text(
         f"🕋 *ئایەتی کورسی — {name}، {ayah}*\n\n{arabic}",
-        reply_markup=ik([[InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان", callback_data="fv:add:2:255")]]),
+        reply_markup=ik([
+            [InlineKeyboardButton("🔊 گوێگرتن بە دەنگی ئایەتی کورسی", callback_data="kursi:audio")],
+            [InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان", callback_data="fv:add:2:255")]
+        ]),
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -349,6 +380,30 @@ async def prayer_city_list(update, page=0, edit=False, mode="prayer"):
     if edit: await update.callback_query.edit_message_text(text,reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
     else: await update.effective_message.reply_text(text,reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
 
+def hijri_date_for(gregorian_date):
+    y, m, d = gregorian_date.year, gregorian_date.month, gregorian_date.day
+    a = (14 - m) // 12
+    yy = y + 4800 - a
+    mm = m + 12 * a - 3
+    jd = d + (153 * mm + 2) // 5 + 365 * yy + yy // 4 - yy // 100 + yy // 400 - 32045
+    hy = (30 * (jd - 1948440) + 10646) // 10631
+    def islamic_jd(year, month):
+        return math.ceil(29.5 * (month - 1)) + (year - 1) * 354 + (3 + 11 * year) // 30 + 1948440
+    hm = 1
+    for candidate in range(1, 13):
+        if islamic_jd(hy, candidate) <= jd:
+            hm = candidate
+        else:
+            break
+    hd = jd - islamic_jd(hy, hm) + 1
+    months = ["محەڕەم", "سەفەر", "ڕەبیعی یەکەم", "ڕەبیعی دووەم", "جومادای یەکەم", "جومادای دووەم", "ڕەجەب", "شەعبان", "ڕەمەزان", "شەوال", "زولقەعدە", "زولحیججە"]
+    return f"{hd}ی {months[hm-1]} {hy} کۆچی"
+
+
+def dual_date_lines(value):
+    return f"📅 زاینی: {value:%Y-%m-%d}\n🌙 هەجری: {hijri_date_for(value)}"
+
+
 async def prayer_times(update, city, edit=False):
     city_names={x.get("Name"):x.get("id") for x in load_json("cityme") if isinstance(x,dict)}
     city_display=next((name for name,table in city_names.items() if str(table).casefold()==str(city).casefold()),city)
@@ -363,7 +418,7 @@ async def prayer_times(update, city, edit=False):
         msg="کاتی ئەم ڕۆژە لە خشتەی سەرچاوەدا نەدۆزرایەوە."
     else:
         labels=["بەیانی","خۆرهەڵاتن","نیوەڕۆ","عەسر","ئێوارە","عیشا"]
-        msg=f"🕌 *کاتەکانی بانگ — {cityname}*\n📅 {datetime.now(TZ).strftime('%Y-%m-%d')}\n\n"
+        msg=f"🕌 *کاتەکانی بانگ — {cityname}*\n{dual_date_lines(datetime.now(TZ).date())}\n\n"
         msg+='\n'.join(f"• {a}: *{b}*" for a,b in zip(labels,row[1:]))
         msg+="\n\n_کاتەکان وەک خشتەی ناو ئەپی ڕێگای ئیسلامن؛ پێش بەکارهێنان لەگەڵ کاتی مزگەوتی ناوچەکەت بەراوردیان بکە._"
     markup=ik([[InlineKeyboardButton("🔄 گۆڕینی شار",callback_data="pcl:prayer:0")]])
@@ -399,7 +454,7 @@ async def monthly_prayer_times(update, city=None, month=None, edit=False):
     by_day = {int(str(row[0]).split("-")[1]): row[1:] for row in rows}
     lines = [
         f"🗓 *کاتەکانی بانگی مانگانە — {city_display}*",
-        f"📅 {month_date:%Y-%m}",
+        f"📅 زاینی: {month_date:%Y-%m} — هەجری: {hijri_date_for(month_date)}",
         "",
         "ڕۆژ | بەیانی | خۆرهەڵاتن | نیوەڕۆ | عەسر | ئێوارە | عیشا",
     ]
@@ -692,16 +747,33 @@ async def content_menu(update):
         rows.append(row)
     await update.effective_message.reply_text("📚 *هەموو بابەتە ئایینییەکان*\nبابەتێک هەڵبژێرە:",reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
 
+async def names_menu(update, page=0, edit=False):
+    with db("name.db") as conn:
+        rows = conn.execute("SELECT _id,arabic FROM name ORDER BY _id LIMIT 100").fetchall()
+    page_size = 10
+    total_pages = max(1, (len(rows)+page_size-1)//page_size)
+    page = max(0, min(int(page), total_pages-1))
+    buttons = [[InlineKeyboardButton(f"{int(row[0])}. {row[1]}", callback_data=f"nm:{int(row[0])-1}")] for row in rows[page*page_size:(page+1)*page_size]]
+    nav = []
+    if page: nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"nml:{page-1}"))
+    if page+1 < total_pages: nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"nml:{page+1}"))
+    if nav: buttons.append(nav)
+    text = f"✨ ناوەکانی خوای گەورە — {len(rows)} ناو\nناوێک هەڵبژێرە بۆ بینینی واتا و ئاماژەکانی."
+    if edit: await update.callback_query.edit_message_text(text, reply_markup=ik(buttons))
+    else: await update.effective_message.reply_text(text, reply_markup=ik(buttons))
+
+
 async def show_names(update,index=0):
     with db("name.db") as c: r=c.execute("SELECT arabic,surah_ayah,sorani,badini,english,farsi FROM name ORDER BY _id LIMIT 1 OFFSET ?",(index,)).fetchone()
     if not r: return
-    text=f"✨ *ناوەکانی خودا — {index+1}/100*\n\n*{r[0]}*\nشوێنی ئاماژە: {r[1]}\n\n{r[2]}\n\n{r[3]}\n\n_{r[4]} — {r[5]}_"
+    text=f"✨ *ناوەکانی خودا — {index+1}/100*\n\n*{r[0]}*\n📖 شوێنی ئاماژە: {r[1]}\n\n🇹🇯 واتا بە سۆرانی:\n{r[2]}\n\nواتا بە بادینی:\n{r[3]}\n\nEnglish: {r[4]}\nفارسی: {r[5]}"
     rows=[]
     nav=[]
-    if index: nav.append(InlineKeyboardButton("⬅️",callback_data=f"nm:{index-1}"))
-    if index<99: nav.append(InlineKeyboardButton("➡️",callback_data=f"nm:{index+1}"))
+    if index: nav.append(InlineKeyboardButton("⬅️ ناوی پێشوو",callback_data=f"nm:{index-1}"))
+    if index<99: nav.append(InlineKeyboardButton("ناوی داهاتوو ➡️",callback_data=f"nm:{index+1}"))
     if nav: rows.append(nav)
-    await update.effective_message.reply_text(text,reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
+    rows.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ هەموو ناوەکان",callback_data=f"nml:{index//10}")])
+    await update.effective_message.reply_text(text,reply_markup=ik(rows))
 
 async def show_dua(update,index=0):
     with db("duha.db") as c: r=c.execute("SELECT du3a,wata FROM du3a ORDER BY id LIMIT 1 OFFSET ?",(index,)).fetchone()
@@ -947,11 +1019,40 @@ async def quiz_answer(update,context,sid):
 async def prayer_reminder_info(update):
     await update.effective_message.reply_text("🔔 *ئاگادارکردنەوەی بانگ*\n\nکاتەکانی بانگ لەم وەشانەدا لە خشتەی داتابەیسی ئەپەکەت پیشان دەدرێن. ئاگادارکردنەوەی ئۆتۆماتیکی لە Telegram پێویستی بە بەردەوام کارکردنی سێرڤەر و ڕێکخستنی job queue هەیە؛ لەم وەشانەدا وەک تایبەتمەندیی چالاک دانەنراوە.")
 
-async def tasbih(update,context,change=0):
-    uid=update.effective_user.id
-    count=change_tasbih(uid,change)
-    rows=[[InlineKeyboardButton("📿 تسبیح +1",callback_data="ts:+"),InlineKeyboardButton("🔄 سفر",callback_data="ts:reset")]]
-    await update.effective_message.reply_text(f"📿 *تەسبیحی ئەلیکترۆنی*\n\nژمارەی زیکر: *{count}*\n\nزیکرێک هەڵبژێرە و دوگمەی +1 دابگرە.",reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
+async def tasbih_picker(update, page=0, edit=False):
+    items = load_json("zikrakan")
+    page_size = 8
+    page = max(0, min(int(page), max(0, (len(items)-1)//page_size)))
+    rows = []
+    for index, item in enumerate(items[page*page_size:(page+1)*page_size], start=page*page_size):
+        if isinstance(item, dict):
+            rows.append([InlineKeyboardButton(str(item.get("title") or f"زیکر {index+1}")[:58], callback_data=f"tz:pick:{index}")])
+    nav = []
+    if page: nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"tz:list:{page-1}"))
+    if (page+1)*page_size < len(items): nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"tz:list:{page+1}"))
+    if nav: rows.append(nav)
+    text = f"📿 زیکرێک هەڵبژێرە — {len(items)} زیکر"
+    if edit: await update.callback_query.edit_message_text(text, reply_markup=ik(rows))
+    else: await update.effective_message.reply_text(text, reply_markup=ik(rows))
+
+
+async def tasbih(update, context, change=0, edit=False):
+    uid = update.effective_user.id
+    zikr_index = get_tasbih_zikr(uid)
+    items = load_json("zikrakan")
+    if zikr_index < 0 or zikr_index >= len(items):
+        return await tasbih_picker(update, 0, edit)
+    count = change_tasbih(uid, change) if change else (get_tasbih(uid) or (0,))[0]
+    item = items[zikr_index] if isinstance(items[zikr_index], dict) else {}
+    title = str(item.get("title") or "زیکری هەڵبژێردراو")
+    description = str(item.get("text") or "")[:900]
+    text = f"📿 تەسبیحی ئەلیکترۆنی\n\n{title}\n\n{description}\n\nژمارەی زیکر: {count}"
+    rows = [
+        [InlineKeyboardButton("➕ ١ زیاد بکە", callback_data="ts:+"), InlineKeyboardButton("🔄 سفر", callback_data="ts:reset")],
+        [InlineKeyboardButton("🔁 گۆڕینی زیکر", callback_data="tz:list:0")]
+    ]
+    if edit: await update.callback_query.edit_message_text(text, reply_markup=ik(rows))
+    else: await update.effective_message.reply_text(text, reply_markup=ik(rows))
 
 
 async def search_prompt(update, mode):
@@ -960,13 +1061,14 @@ async def search_prompt(update, mode):
 
 async def feedback_prompt(update):
     await update.effective_message.reply_text(
-        "💬 *پێشنیار و ڕەخنە*\n\nجۆری پەیامەکەت هەڵبژێرە:",
+        "💬 پێشنیار و ڕەخنە\n\nجۆری پەیامەکەت هەڵبژێرە:",
         reply_markup=ik([
             [InlineKeyboardButton("🐞 ڕاپۆرتی هەڵە", callback_data="fb:cat:bug")],
             [InlineKeyboardButton("💡 پێشنیار", callback_data="fb:cat:suggestion")],
             [InlineKeyboardButton("📚 ناوەڕۆک", callback_data="fb:cat:content")],
-            [InlineKeyboardButton("✉️ گشتی", callback_data="fb:cat:general")]
-        ]), parse_mode=ParseMode.MARKDOWN
+            [InlineKeyboardButton("✉️ گشتی", callback_data="fb:cat:general")],
+            [InlineKeyboardButton("👤 پەیوەندی بە بەڕێوەبەر", url="https://t.me/ismahil_312")]
+        ])
     )
 
 
@@ -1028,15 +1130,45 @@ async def pdf_book_item(update, index, page=0):
     title = str(book.get("name") or f"کتێب {index+1}")
     about_text = str(book.get("about") or "کورتەی کتێب بەردەست نییە.")
     author = str(book.get("author") or "نووسەر دیاری نەکراوە")
-    url = str(book.get("url") or "")
-    buttons = []
-    if url.startswith("https://"):
-        buttons.append([InlineKeyboardButton("📖 کردنەوەی کتێب (PDF)", url=url)])
+    buttons = [[InlineKeyboardButton("📥 ناردنی فایلەکەی PDF", callback_data=f"pb:send:{index}:{page}")]]
     buttons.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ کتێبخانە", callback_data=f"pb:list:{page}")])
     await update.callback_query.edit_message_text(
-        f"📚 {title}\n\n✍️ نووسەر: {author}\n\n{about_text[:2500]}",
+        f"📚 {title}\n\n✍️ نووسەر: {author}\n\n{about_text[:1800]}\n\nفایلەکە بە شێوەی PDF بۆت دەنێردرێت.",
         reply_markup=ik(buttons), disable_web_page_preview=True
     )
+
+
+async def send_pdf_book(update, context, index, page=0):
+    books = load_pdf_books()
+    if not 0 <= index < len(books):
+        return await update.callback_query.answer("کتێب نەدۆزرایەوە", show_alert=True)
+    book = books[index]
+    url = str(book.get("url") or "")
+    if not url.startswith("https://"):
+        return await update.effective_message.reply_text("لینکی فایلەکە دروست نییە.")
+    title = str(book.get("name") or f"کتێب {index+1}")
+    status = await update.effective_message.reply_text(f"⏳ فایلەکەی «{title}» ئامادە دەکرێت...")
+    try:
+        def download():
+            request = urllib.request.Request(url, headers={"User-Agent": "Regay-Islam-Telegram-Bot/1.0"})
+            with urllib.request.urlopen(request, timeout=60) as response:
+                data = response.read(49*1024*1024+1)
+            if not data:
+                raise ValueError("Empty PDF response")
+            if len(data) > 49*1024*1024:
+                raise ValueError("PDF exceeds Telegram bot upload limit")
+            if not data.startswith(b"%PDF"):
+                raise ValueError("URL did not return a PDF file")
+            return data
+        payload = await asyncio.to_thread(download)
+        document = io.BytesIO(payload)
+        safe_name = "".join(ch for ch in title if ch.isalnum() or ch in " _-")[:70] or "islamic-book"
+        document.name = safe_name + ".pdf"
+        await context.bot.send_document(chat_id=update.effective_chat.id, document=document, caption=f"📚 {title}\n✍️ {str(book.get('author') or 'نووسەر دیاری نەکراوە')[:150]}")
+        await status.delete()
+    except Exception:
+        log.exception("PDF delivery failed for book index %s", index)
+        await status.edit_text("⚠️ ناردنی PDF سەرکەوتوو نەبوو. ڕەنگە فایلەکە گەورە بێت یان سێرڤەری سەرچاوە وەڵام نەدات.")
 
 async def do_search(update,context,query):
     mode=context.user_data.pop("search_mode","all")
@@ -1080,14 +1212,14 @@ async def handle_text(update,context):
         return await do_search(update,context,text)
     mapping={
         "📖 قورئانی پیرۆز":lambda:show_suras(update),
-        "🕌 کاتەکانی بانگ":lambda:prayer_city_list(update),
+        "🕌 کاتەکانی بانگ":lambda:prayer_cmd(update,context),
         "🗓 کاتەکانی بانگی مانگانە":lambda:monthly_prayer_times(update),
         "🕋 ئایەتی کورسی":lambda:show_ayat_kursi(update),
         "📖 مصحەف پەڕە بە پەڕە":lambda:show_quran_page(update,1),
         "🧭 ئاراستەی قیبلە":lambda:request_qibla_location(update),
         "📿 تەسبیح و زیکر":lambda:tasbih(update,context),
         "🤲 دوعاکان":lambda:show_dua(update,0),
-        "📚 کتێب و فەرموودە":lambda:books_menu(update),
+        "📜 فەرموودەکان":lambda:json_list(update,"farmwda",0),
         "📚 کتێبخانەی PDF":lambda:pdf_books_menu(update),
         "💬 پێشنیار و ڕەخنە":lambda:feedback_prompt(update),
         "🕋 تەوبە و ئامۆژگاری":lambda:repentance_menu(update),
