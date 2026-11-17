@@ -321,7 +321,7 @@ async def monthly_prayer_times(update, city=None, month=None, edit=False):
         if not exists:
             return await update.effective_message.reply_text("خشتەی بانگ بۆ ئەم شارە بەردەست نییە.")
         rows = conn.execute(
-            f'SELECT D,bayani,niwaro,asr,eywara,esha FROM "{city}" WHERE D LIKE ? ORDER BY ID',
+            f'SELECT D,bayani,xorhalatn,niwaro,asr,eywara,esha FROM "{city}" WHERE D LIKE ? ORDER BY ID',
             (month_key + "-%",),
         ).fetchall()
     by_day = {int(str(row[0]).split("-")[1]): row[1:] for row in rows}
@@ -329,7 +329,7 @@ async def monthly_prayer_times(update, city=None, month=None, edit=False):
         f"🗓 *کاتەکانی بانگی مانگانە — {city_display}*",
         f"📅 {month_date:%Y-%m}",
         "",
-        "ڕۆژ | بەیانی | نیوەڕۆ | عەسر | ئێوارە | عیشا",
+        "ڕۆژ | بەیانی | خۆرهەڵاتن | نیوەڕۆ | عەسر | ئێوارە | عیشا",
     ]
     for day in range(1, days_in_month + 1):
         times = by_day.get(day)
