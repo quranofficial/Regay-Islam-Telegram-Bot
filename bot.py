@@ -176,7 +176,7 @@ async def show_ayat_kursi(update):
         return await update.effective_message.reply_text("ئایەتی کورسی لە داتابەیسی قورئاندا نەدۆزرایەوە.")
     name, ayah, arabic = row
     await update.effective_message.reply_text(
-        f"🕋 *ئایەتی کورسی — {name}، {ayah}*\\n\\n{arabic}",
+        f"🕋 *ئایەتی کورسی — {name}، {ayah}*\n\n{arabic}",
         reply_markup=ik([[InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان", callback_data="fv:add:2:255")]]),
         parse_mode=ParseMode.MARKDOWN,
     )
@@ -297,7 +297,7 @@ async def monthly_prayer_times(update, city=None, month=None, edit=False):
         InlineKeyboardButton("مانگی داهاتوو ➡️", callback_data=f"pm:{next_month:%Y-%m}"),
     ]
     markup = ik([nav, [InlineKeyboardButton("🏙 گۆڕینی شار", callback_data="pcl:month:0")]])
-    message = "\\n".join(lines) + "\\n\\n_کاتەکان لە خشتەی ساڵانەی ئەپی سەرچاوەوە وەرگیراون؛ لەگەڵ مزگەوتی ناوچەکەت بەراوردیان بکە._"
+    message = "\n".join(lines) + "\n\n_کاتەکان لە خشتەی ساڵانەی ئەپی سەرچاوەوە وەرگیراون؛ لەگەڵ مزگەوتی ناوچەکەت بەراوردیان بکە._"
     if edit:
         await update.callback_query.edit_message_text(message[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
     else:
