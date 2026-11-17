@@ -56,7 +56,7 @@ def load_json(key: str) -> list:
             value = json.load(f)
         value = value if isinstance(value, list) else []
         if key == "zikrakan":
-            value = value[:126]
+            value = value[1:127]
         _json_cache[key] = value
     return _json_cache[key]
 
@@ -970,15 +970,16 @@ async def repentance_item(update,rid):
         else: rows=[]
     if rows:
         buttons=[[InlineKeyboardButton(str(t)[:58],callback_data=f"gx:{table}:{i}")] for i,(t,d) in enumerate(rows)]
+        buttons.append([InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان",callback_data=f"fvc:add:-7:{rid}")])
         await update.callback_query.edit_message_text(f"🕋 {title}\nبابەتێک هەڵبژێرە:",reply_markup=ik(buttons))
     else:
-        await update.effective_message.reply_text(f"🕋 {title}\n\n{body[:3700]}",disable_web_page_preview=True)
+        await update.effective_message.reply_text(f"🕋 {title}\n\n{body[:3500]}",reply_markup=ik([[InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان",callback_data=f"fvc:add:-7:{rid}")]]),disable_web_page_preview=True)
 
 async def repentance_subitem(update,table,index):
     allowed={"bochetawbabkain","chontawbabkam","marjakanitawba","neshanayqbulitawba"}
     if table not in allowed: return await update.callback_query.answer("بەش نەدۆزرایەوە",show_alert=True)
     with db("garanawa.db") as c: row=c.execute(f'SELECT title,desc FROM "{table}" ORDER BY _id LIMIT 1 OFFSET ?',(index,)).fetchone()
-    if row: await update.effective_message.reply_text(f"{row[0]}\n\n{row[1][:3700]}",disable_web_page_preview=True)
+    if row: await update.effective_message.reply_text(f"{row[0]}\n\n{row[1][:3500]}",reply_markup=ik([[InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان",callback_data=f"fvc:add:{-8-list(sorted(allowed)).index(table)}:{index}")]]),disable_web_page_preview=True)
 
 RAMADAN_TABLES = {
     "welcome": "پێشوازی لە ڕەمەزان",
@@ -1049,7 +1050,10 @@ async def ramadan_item(update, table, rid):
     await update.effective_message.reply_text(
         f"🌙 {row[0]}\n\n{row[1][:3700]}",
         disable_web_page_preview=True,
-        reply_markup=ik([[InlineKeyboardButton("🔙 گەڕانەوە بۆ بەش", callback_data=f"rd:{table}:0")]])
+        reply_markup=ik([
+            [InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان", callback_data=f"fvc:add:{-20-list(RAMADAN_TABLES).index(table)}:{rid}")],
+            [InlineKeyboardButton("🔙 گەڕانەوە بۆ بەش", callback_data=f"rd:{table}:0")]
+        ])
     )
 
 async def quiz_start(update,context):
@@ -1102,7 +1106,8 @@ async def tasbih(update, context, change=0, edit=False):
     text = f"📿 تەسبیح\n\n{phrase}\n\nژمارە: {count}"
     rows = [
         [InlineKeyboardButton("➕ ١ زیاد بکە", callback_data="ts:+"), InlineKeyboardButton("🔄 سفر", callback_data="ts:reset")],
-        [InlineKeyboardButton("🔁 هەڵبژاردنی زیکری تر", callback_data="tz:list:0")]
+        [InlineKeyboardButton("🔁 هەڵبژاردنی زیکری تر", callback_data="tz:list:0")],
+        [InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان", callback_data=f"fvc:add:-5:{zikr_index}")]
     ]
     if edit: await update.callback_query.edit_message_text(text, reply_markup=ik(rows))
     else: await update.effective_message.reply_text(text, reply_markup=ik(rows))
@@ -1185,6 +1190,7 @@ async def pdf_book_item(update, index, page=0):
     about_text = str(book.get("about") or "کورتەی کتێب بەردەست نییە.")
     author = str(book.get("author") or "نووسەر دیاری نەکراوە")
     buttons = [[InlineKeyboardButton("📥 ناردنی فایلەکەی PDF", callback_data=f"pb:send:{index}:{page}")]]
+    buttons.append([InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان", callback_data=f"fvc:add:-6:{index}")])
     buttons.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ کتێبخانە", callback_data=f"pb:list:{page}")])
     await update.callback_query.edit_message_text(
         f"📚 {title}\n\n✍️ نووسەر: {author}\n\n{about_text[:1800]}\n\nفایلەکە بە شێوەی PDF بۆت دەنێردرێت.",
@@ -1458,6 +1464,23 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
                 title = str(row[0]) if row else "بابەتی کتێب"
             elif sid == -5:
                 title = TASBIH_PHRASES[item_id] if 0 <= item_id < len(TASBIH_PHRASES) else "تەسبیح"
+            elif sid == -6:
+                books = load_pdf_books()
+                title = str(books[item_id].get("name") or "کتێبی PDF") if 0 <= item_id < len(books) else "کتێبی PDF"
+            elif sid == -7:
+                with db("garanawa.db") as c:
+                    row = c.execute("SELECT title FROM babatakan WHERE _id=?", (item_id,)).fetchone()
+                title = row[0] if row else "تەوبە و ئامۆژگاری"
+            elif -11 <= sid <= -8:
+                allowed_tables = sorted({"bochetawbabkain","chontawbabkam","marjakanitawba","neshanayqbulitawba"})
+                table_index = -8 - sid
+                title = f"بابەتی تەوبە {item_id+1}"
+            elif -20 >= sid > -20-len(RAMADAN_TABLES):
+                table_index = -20 - sid
+                table = list(RAMADAN_TABLES)[table_index]
+                with db("ramazanew.db") as c:
+                    row = c.execute(f'SELECT title FROM "{table}" WHERE _id=?', (item_id,)).fetchone()
+                title = row[0] if row else RAMADAN_TABLES[table]
             elif sid <= -100:
                 key_index = -100 - sid
                 keys = list(JSON_FILES)
@@ -1477,6 +1500,18 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             if sid == -5:
                 set_tasbih_zikr(q.from_user.id, item_id)
                 return await tasbih(update, context)
+            if sid == -6:
+                return await pdf_book_item(update, item_id)
+            if sid == -7:
+                return await repentance_item(update, item_id)
+            if -11 <= sid <= -8:
+                allowed_tables = sorted({"bochetawbabkain","chontawbabkam","marjakanitawba","neshanayqbulitawba"})
+                table_index = -8 - sid
+                if 0 <= table_index < len(allowed_tables):
+                    return await repentance_subitem(update, allowed_tables[table_index], item_id)
+            if -20 >= sid > -20-len(RAMADAN_TABLES):
+                table_index = -20 - sid
+                return await ramadan_item(update, list(RAMADAN_TABLES)[table_index], item_id)
             if sid <= -100:
                 key_index = -100 - sid
                 keys = list(JSON_FILES)
@@ -1606,6 +1641,8 @@ async def cmd_cancel(update, context):
     if context.user_data.pop("feedback_waiting", None):
         context.user_data.pop("feedback_category", None)
         return await update.effective_message.reply_text("❎ ناردنی پەیام هەڵوەشایەوە.")
+    if context.user_data.pop("feedback_reply_to", None):
+        return await update.effective_message.reply_text("❎ وەڵامدانەوە هەڵوەشایەوە.")
     if context.user_data.pop("admin_broadcast_waiting", None):
         return await update.effective_message.reply_text("❎ ناردنی پەیامی گشتی هەڵوەشایەوە.")
     await update.effective_message.reply_text("هیچ کردارێکی چاوەڕوانکراو نییە.")
