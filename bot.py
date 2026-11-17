@@ -1,13 +1,13 @@
 """ڕێگای ئیسلام — Telegram edition, built from the supplied Android app data."""
 from __future__ import annotations
-import os, json, math, sqlite3, logging, asyncio, io, urllib.request
+import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar
 from pathlib import Path
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from telegram.constants import ParseMode
 from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from supabase_store import (is_configured, save_user, get_city, set_city, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user)
+from supabase_store import (is_configured, save_user, get_city, set_city, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user)
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -63,6 +63,7 @@ def db(name: str):
 def main_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("📖 قورئانی پیرۆز"), KeyboardButton("🕌 کاتەکانی بانگ")],
+        [KeyboardButton("🕋 ئایەتی کورسی"), KeyboardButton("🗓 کاتەکانی بانگی مانگانە")],
         [KeyboardButton("🧭 ئاراستەی قیبلە"), KeyboardButton("📿 تەسبیح و زیکر")],
         [KeyboardButton("🤲 دوعاکان"), KeyboardButton("📚 کتێب و فەرموودە")],
         [KeyboardButton("🌙 ڕەمەزان"), KeyboardButton("✨ ناوەکانی خودا")],
@@ -165,6 +166,22 @@ async def show_suras(update, page=0, edit=False):
     if edit: await update.callback_query.edit_message_text(text,reply_markup=markup,parse_mode=ParseMode.MARKDOWN)
     else: await update.effective_message.reply_text(text,reply_markup=markup,parse_mode=ParseMode.MARKDOWN)
 
+async def show_ayat_kursi(update):
+    """Open Ayat al-Kursi directly from the original Quran database."""
+    with db("regayislam.db") as conn:
+        row = conn.execute(
+            "SELECT sura_name_ar,ayah,text FROM ayah_text WHERE suraId=2 AND ayah=255"
+        ).fetchone()
+    if not row:
+        return await update.effective_message.reply_text("ئایەتی کورسی لە داتابەیسی قورئاندا نەدۆزرایەوە.")
+    name, ayah, arabic = row
+    await update.effective_message.reply_text(
+        f"🕋 *ئایەتی کورسی — {name}، {ayah}*\\n\\n{arabic}",
+        reply_markup=ik([[InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان", callback_data="fv:add:2:255")]]),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
 async def show_ayahs(update, sid, offset=0, edit=False):
     save_last_read(update.effective_user.id, sid, offset)
     with db("regayislam.db") as c:
@@ -205,7 +222,7 @@ async def show_tafsir(update,sid,ayah):
 
 async def prayer_city_list(update, page=0, edit=False, mode="prayer"):
     cities=get_cities(); chunk=cities[page*12:(page+1)*12]
-    prefix="qc" if mode=="qibla" else "pc"
+    prefix = "qc" if mode == "qibla" else ("mc" if mode == "month" else "pc")
     rows=[[InlineKeyboardButton(name,callback_data=f"{prefix}:{table}")] for name,table,lat,lon in chunk]
     nav=[]
     if page: nav.append(InlineKeyboardButton("⬅️",callback_data=f"pcl:{mode}:{page-1}"))
@@ -235,6 +252,57 @@ async def prayer_times(update, city, edit=False):
     markup=ik([[InlineKeyboardButton("🔄 گۆڕینی شار",callback_data="pcl:prayer:0")]])
     if edit: await update.callback_query.edit_message_text(msg,reply_markup=markup,parse_mode=ParseMode.MARKDOWN)
     else: await update.effective_message.reply_text(msg,reply_markup=markup,parse_mode=ParseMode.MARKDOWN)
+
+async def monthly_prayer_times(update, city=None, month=None, edit=False):
+    """Show the original Android app's month-view prayer timetable."""
+    if not city:
+        city = get_city(update.effective_user.id)
+    if not city:
+        await prayer_city_list(update, mode="month")
+        return
+    now = datetime.now(TZ)
+    try:
+        month_date = date.fromisoformat(month + "-01") if month else now.date().replace(day=1)
+    except ValueError:
+        month_date = now.date().replace(day=1)
+    month_key = month_date.strftime("%m")
+    city_names = {x.get("Name"): x.get("id") for x in load_json("cityme") if isinstance(x, dict)}
+    city_display = next((name for name, table in city_names.items() if str(table).casefold() == str(city).casefold()), city)
+    days_in_month = calendar.monthrange(month_date.year, month_date.month)[1]
+    with db("katenwezh62.db") as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (city,)
+        ).fetchone()
+        if not exists:
+            return await update.effective_message.reply_text("خشتەی بانگ بۆ ئەم شارە بەردەست نییە.")
+        rows = conn.execute(
+            f'SELECT D,bayani,niwaro,asr,eywara,esha FROM "{city}" WHERE D LIKE ? ORDER BY ID',
+            (month_key + "-%",),
+        ).fetchall()
+    by_day = {int(str(row[0]).split("-")[1]): row[1:] for row in rows}
+    lines = [
+        f"🗓 *کاتەکانی بانگی مانگانە — {city_display}*",
+        f"📅 {month_date:%Y-%m}",
+        "",
+        "ڕۆژ | بەیانی | نیوەڕۆ | عەسر | ئێوارە | عیشا",
+    ]
+    for day in range(1, days_in_month + 1):
+        times = by_day.get(day)
+        if times:
+            lines.append(f"{day:02d} | " + " | ".join(str(value or "—")[:5] for value in times))
+    previous = (month_date - timedelta(days=1)).replace(day=1)
+    next_month = (month_date.replace(day=28) + timedelta(days=4)).replace(day=1)
+    nav = [
+        InlineKeyboardButton("⬅️ مانگی پێشوو", callback_data=f"pm:{previous:%Y-%m}"),
+        InlineKeyboardButton("مانگی داهاتوو ➡️", callback_data=f"pm:{next_month:%Y-%m}"),
+    ]
+    markup = ik([nav, [InlineKeyboardButton("🏙 گۆڕینی شار", callback_data="pcl:month:0")]])
+    message = "\\n".join(lines) + "\\n\\n_کاتەکان لە خشتەی ساڵانەی ئەپی سەرچاوەوە وەرگیراون؛ لەگەڵ مزگەوتی ناوچەکەت بەراوردیان بکە._"
+    if edit:
+        await update.callback_query.edit_message_text(message[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.effective_message.reply_text(message[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+
 
 async def qibla(update, city=None):
     if not city: city=get_city(update.effective_user.id)
@@ -526,7 +594,7 @@ async def prayer_reminder_info(update):
 async def tasbih(update,context,change=0):
     uid=update.effective_user.id
     count=change_tasbih(uid,change)
-    rows=[[InlineKeyboardButton("📿 تسبیح +1",callback_data="ts:+"),InlineKeyboardButton("🔄 سفر",callback_data="ts:0")]]
+    rows=[[InlineKeyboardButton("📿 تسبیح +1",callback_data="ts:+"),InlineKeyboardButton("🔄 سفر",callback_data="ts:reset")]]
     await update.effective_message.reply_text(f"📿 *تەسبیحی ئەلیکترۆنی*\n\nژمارەی زیکر: *{count}*\n\nزیکرێک هەڵبژێرە و دوگمەی +1 دابگرە.",reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
 
 
@@ -576,6 +644,8 @@ async def handle_text(update,context):
     mapping={
         "📖 قورئانی پیرۆز":lambda:show_suras(update),
         "🕌 کاتەکانی بانگ":lambda:prayer_city_list(update),
+        "🗓 کاتەکانی بانگی مانگانە":lambda:monthly_prayer_times(update),
+        "🕋 ئایەتی کورسی":lambda:show_ayat_kursi(update),
         "🧭 ئاراستەی قیبلە":lambda:qibla(update),
         "📿 تەسبیح و زیکر":lambda:tasbih(update,context),
         "🤲 دوعاکان":lambda:show_dua(update,0),
@@ -671,6 +741,10 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             city=data[3:]; set_city(q.from_user.id,city); return await prayer_times(update,city,True)
         if data.startswith("qc:"):
             city=data[3:]; set_city(q.from_user.id,city); return await qibla(update,city)
+        if data.startswith("mc:"):
+            city=data[3:]; set_city(q.from_user.id,city); return await monthly_prayer_times(update,city,edit=True)
+        if data.startswith("pm:"):
+            return await monthly_prayer_times(update,get_city(q.from_user.id),data[3:],edit=True)
         if data.startswith("j:"):
             _,key,index=data.split(":"); return await show_json_item(update,context,key,int(index),True)
         if data.startswith("jl:"):
@@ -681,6 +755,9 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         if data.startswith("bc:"):
             _,tag,page=data.split(":"); return await book_list(update,tag,int(page))
         if data.startswith("bi:"): return await book_item(update,int(data.split(":")[1]))
+        if data == "ts:reset":
+            reset_tasbih(q.from_user.id)
+            return await tasbih(update,context,0)
         if data.startswith("ts:"):
             n=1 if data.endswith("+") else 0
             return await tasbih(update,context,n)
