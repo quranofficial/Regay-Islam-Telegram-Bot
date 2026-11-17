@@ -104,6 +104,62 @@ async def send_text(update: Update, text: str, reply_markup=None, parse_mode=Non
     for i, part in enumerate(cut(text)):
         await update.effective_message.reply_text(part, reply_markup=reply_markup if i == len(cut(text))-1 else None, parse_mode=parse_mode, disable_web_page_preview=True)
 
+CHANNEL_USERNAME = "@Regayislam_1"
+CHANNEL_URL = "https://t.me/Regayislam_1"
+
+def channel_join_markup():
+    return ik([
+        [InlineKeyboardButton("🔗 چوونە ناو کەناڵ", url=CHANNEL_URL)],
+        [InlineKeyboardButton("🔄 پشکنین", callback_data="channel:check")],
+    ])
+
+async def is_channel_member(bot, user_id):
+    member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
+    return member.status in ("member", "administrator", "creator") or (
+        member.status == "restricted" and bool(getattr(member, "is_member", False))
+    )
+
+async def membership_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    if not user:
+        return
+    if query and query.data == "channel:check":
+        try:
+            joined = await is_channel_member(context.bot, user.id)
+        except Exception:
+            log.exception("Could not verify channel membership for user %s", user.id)
+            await query.answer("پشکنینی ئەندامبوون سەرکەوتوو نەبوو؛ تکایە دواتر هەوڵ بدەرەوە.", show_alert=True)
+            raise ApplicationHandlerStop
+        if joined:
+            await query.answer("✅ ئەندامبوون پشتڕاستکرایەوە.")
+            await query.edit_message_text("✅ بەخێربێیت! ئێستا دەتوانیت بۆتەکە بەکاربهێنیت.\n\nبۆ دەستپێکردن /start بنووسە.")
+        else:
+            await query.answer("هێشتا ئەندامی کەناڵ نەبوویت.", show_alert=True)
+            await query.edit_message_text(
+                "🔒 بۆ بەکارهێنانی بۆتەکە، سەرەتا دەبێت ببیتە ئەندامی کەناڵەکەمان.\n\n"
+                "١. بچۆ ناو کەناڵەکە.\n"
+                "٢. پاشان دوگمەی «پشکنین» دابگرە.",
+                reply_markup=channel_join_markup()
+            )
+        raise ApplicationHandlerStop
+    try:
+        if await is_channel_member(context.bot, user.id):
+            return
+    except Exception:
+        log.exception("Could not verify channel membership for user %s", user.id)
+    prompt = (
+        "🔒 بۆ بەکارهێنانی بۆتەکە، سەرەتا دەبێت ببیتە ئەندامی کەناڵەکەمان.\n\n"
+        "١. بچۆ ناو کەناڵەکە.\n"
+        "٢. پاشان دوگمەی «پشکنین» دابگرە."
+    )
+    if query:
+        await query.answer("سەرەتا دەبێت ببیتە ئەندامی کەناڵ.", show_alert=True)
+        await query.edit_message_text(prompt, reply_markup=channel_join_markup())
+    elif update.effective_message:
+        await update.effective_message.reply_text(prompt, reply_markup=channel_join_markup())
+    raise ApplicationHandlerStop
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     save_user(user.id, user.first_name or "", user.username or "")
@@ -1868,6 +1924,8 @@ def main():
     if not is_configured():
         raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables are required.")
     app=Application.builder().token(TOKEN).post_init(post_init).build()
+    app.add_handler(MessageHandler(filters.ALL, membership_gate), group=-2)
+    app.add_handler(CallbackQueryHandler(membership_gate), group=-2)
     app.add_handler(MessageHandler(filters.ALL, block_banned), group=-1)
     app.add_handler(CallbackQueryHandler(block_banned), group=-1)
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("menu",menu_cmd)); app.add_handler(CommandHandler("hide",hide_menu_cmd)); app.add_handler(CommandHandler("help",help_cmd))
