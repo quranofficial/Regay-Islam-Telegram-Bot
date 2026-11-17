@@ -1726,7 +1726,8 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         if data == "fbprofiles":
             return await firebase_video_profiles_menu(update)
         if data.startswith("fbprofile:"):
-            return await firebase_video_menu(update, data.split(":", 1)[1], 0, True)
+            # Profile cards are photo messages; send the filtered list as a new text message.
+            return await firebase_video_menu(update, data.split(":", 1)[1], 0, False)
         if data.startswith("fbvp:"):
             _, tag, page = data.split(":")
             return await firebase_video_menu(update, tag, int(page), True)
