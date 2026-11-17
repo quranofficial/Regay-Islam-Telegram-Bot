@@ -20,6 +20,9 @@ ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("regay_islam")
 
+# Protect memory and bandwidth while allowing normal bot updates to run concurrently.
+LARGE_AUDIO_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
+
 # JSON collections copied without content rewriting from the supplied app.
 JSON_FILES = {
     "farmwda": ("فەرموودە هەڵبژێردراوەکان", "farmwda.json"),
@@ -1117,10 +1120,11 @@ async def play_qari_surah(update,context,index,sid):
         f"⏳ دەنگی {surah_name} بە قاری {qari_name} ئامادە دەکرێت...\n📥 وەرگرتنی MP3"
     )
     try:
-        # Allow large recitations to download; split them losslessly into Telegram-safe MP3 parts.
-        audio_data = await asyncio.to_thread(
-            download_cached_bytes, audio_url, 512 * 1024 * 1024, 120
-        )
+        # Several users may request audio at once; cap only heavyweight downloads.
+        async with LARGE_AUDIO_DOWNLOAD_SEMAPHORE:
+            audio_data = await asyncio.to_thread(
+                download_cached_bytes, audio_url, 512 * 1024 * 1024, 120
+            )
         await status.edit_text("📤 دەنگەکە وەرگیرا؛ ئامادەی ناردنە...")
         chat_id = update.effective_chat.id
         title = f"{surah_name} — {qari_name}"[:64]
@@ -1147,46 +1151,68 @@ async def play_qari_surah(update,context,index,sid):
                     capture_output=True, text=True, timeout=60, check=True,
                 )
                 duration = float(probe.stdout.strip())
-                segment_seconds = max(60, int(duration * (max_part_bytes * 0.88 / len(audio_data))))
+                if not math.isfinite(duration) or duration <= 0:
+                    raise RuntimeError("FFprobe returned an invalid audio duration")
                 pattern = os.path.join(temp_dir, "part-%03d.mp3")
-                split_command = [
-                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", source,
-                    "-map", "0:a:0", "-vn", "-sn", "-dn", "-c:a", "copy",
-                    "-f", "segment", "-segment_format", "mp3",
-                    "-segment_time", str(segment_seconds), "-reset_timestamps", "1", pattern,
-                ]
-                split_result = subprocess.run(
-                    split_command, capture_output=True, text=True, timeout=600,
-                )
-                if split_result.returncode != 0:
-                    # Some MP3 streams cannot be stream-copied by the segment muxer.
-                    # Retry by decoding and encoding standard MP3 segments.
-                    log.warning(
-                        "Lossless MP3 split failed; retrying with MP3 re-encode: %s",
-                        (split_result.stderr or "unknown ffmpeg error")[-2000:],
-                    )
+                safe_part_bytes = 24 * 1024 * 1024
+                segment_seconds = max(30, int(duration * safe_part_bytes * 0.80 / len(audio_data)))
+                parts = []
+                split_errors = []
+                # Stream-copy first; if a cut is too large or only one part is made,
+                # shorten the segments and retry instead of failing immediately.
+                for attempt in range(6):
                     for old_part in Path(temp_dir).glob("part-*.mp3"):
                         old_part.unlink()
-                    encode_command = [
-                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", source,
-                        "-map", "0:a:0", "-vn", "-sn", "-dn",
-                        "-c:a", "libmp3lame", "-b:a", "128k",
-                        "-f", "segment", "-segment_format", "mp3",
-                        "-segment_time", str(segment_seconds),
-                        "-reset_timestamps", "1", pattern,
-                    ]
-                    encode_result = subprocess.run(
-                        encode_command, capture_output=True, text=True, timeout=1200,
+                    split_result = subprocess.run(
+                        [
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", source,
+                            "-map", "0:a:0", "-vn", "-sn", "-dn", "-c:a", "copy",
+                            "-f", "segment", "-segment_format", "mp3",
+                            "-segment_time", str(segment_seconds),
+                            "-reset_timestamps", "1", pattern,
+                        ],
+                        capture_output=True, text=True, timeout=600,
                     )
-                    if encode_result.returncode != 0:
-                        detail = (encode_result.stderr or split_result.stderr or "unknown ffmpeg error")[-2500:]
-                        raise RuntimeError(f"FFmpeg could not split this audio: {detail}")
-                parts = sorted(
-                    os.path.join(temp_dir, name) for name in os.listdir(temp_dir)
-                    if name.startswith("part-") and name.endswith(".mp3")
-                )
-                if len(parts) < 2 or any(os.path.getsize(path) > 48 * 1024 * 1024 for path in parts):
-                    raise RuntimeError("MP3 splitting did not produce Telegram-safe parts")
+                    parts = sorted(
+                        str(path) for path in Path(temp_dir).glob("part-*.mp3")
+                    )
+                    if (
+                        split_result.returncode == 0
+                        and len(parts) >= 2
+                        and all(os.path.getsize(path) <= 45 * 1024 * 1024 for path in parts)
+                    ):
+                        break
+                    split_errors.append((split_result.stderr or "").strip()[-1200:])
+                    segment_seconds = max(15, int(segment_seconds * 0.60))
+                else:
+                    # Guaranteed-size fallback: constant-bitrate MP3 gives predictable
+                    # segment sizes even for unusual or variable-bitrate source files.
+                    for old_part in Path(temp_dir).glob("part-*.mp3"):
+                        old_part.unlink()
+                    fallback_bitrate = 96_000
+                    segment_seconds = max(30, int(safe_part_bytes * 8 / fallback_bitrate * 0.90))
+                    encode_result = subprocess.run(
+                        [
+                            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", source,
+                            "-map", "0:a:0", "-vn", "-sn", "-dn",
+                            "-c:a", "libmp3lame", "-b:a", "96k",
+                            "-f", "segment", "-segment_format", "mp3",
+                            "-segment_time", str(segment_seconds),
+                            "-reset_timestamps", "1", pattern,
+                        ],
+                        capture_output=True, text=True, timeout=1800,
+                    )
+                    parts = sorted(
+                        str(path) for path in Path(temp_dir).glob("part-*.mp3")
+                    )
+                    if (
+                        encode_result.returncode != 0
+                        or len(parts) < 2
+                        or any(os.path.getsize(path) > 45 * 1024 * 1024 for path in parts)
+                    ):
+                        detail = (encode_result.stderr or " | ".join(split_errors) or
+                                  "FFmpeg did not create at least two safe MP3 parts")[-2500:]
+                        raise RuntimeError(f"MP3 split failed after retries: {detail}")
                 await status.edit_text(f"📤 قەبارەی دەنگەکە زۆرە؛ بە {len(parts)} بەش دەنێردرێت...")
                 for part_number, part_path in enumerate(parts, 1):
                     with open(part_path, "rb") as part_file:
@@ -2377,14 +2403,14 @@ def main():
     # wait behind a slow network/database operation from another update.
     # Large MP3 uploads need longer HTTPX write/read timeouts than Telegram's defaults.
     telegram_request = HTTPXRequest(
-        connection_pool_size=32,
+        connection_pool_size=64,
         connect_timeout=30,
         read_timeout=180,
         write_timeout=300,
         pool_timeout=30,
     )
     app=(Application.builder().token(TOKEN).request(telegram_request)
-         .post_init(post_init).concurrent_updates(16).build())
+         .post_init(post_init).concurrent_updates(32).build())
     app.add_handler(MessageHandler(filters.ALL, membership_gate), group=-2)
     app.add_handler(CallbackQueryHandler(membership_gate), group=-2)
     app.add_handler(MessageHandler(filters.ALL, block_banned), group=-1)
