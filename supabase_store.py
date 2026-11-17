@@ -74,6 +74,35 @@ def get_city(uid: int):
     return rows[0].get("city") if rows else None
 
 
+def get_prayer_notifications(uid: int) -> bool:
+    rows = _request(
+        "GET", "bot_users",
+        params={"select": "prayer_notifications", "user_id": f"eq.{uid}", "limit": "1"},
+    ) or []
+    return bool(rows[0].get("prayer_notifications", False)) if rows else False
+
+
+def set_prayer_notifications(uid: int, enabled: bool):
+    _upsert("bot_users", {"user_id": uid, "prayer_notifications": bool(enabled)})
+
+
+def list_prayer_notification_users():
+    return _request(
+        "GET", "bot_users",
+        params={"select": "user_id,city", "prayer_notifications": "eq.true", "limit": "10000"},
+    ) or []
+
+
+def claim_prayer_notification(uid: int, prayer_date: str, prayer_key: str) -> bool:
+    rows = _request(
+        "POST", "bot_prayer_notifications_sent",
+        params={"on_conflict": "user_id,prayer_date,prayer_key"},
+        payload={"user_id": uid, "prayer_date": prayer_date, "prayer_key": prayer_key},
+        prefer="resolution=ignore-duplicates,return=representation",
+    )
+    return bool(rows)
+
+
 def set_city(uid: int, city: str):
     _upsert("bot_users", {"user_id": uid, "city": city})
 
