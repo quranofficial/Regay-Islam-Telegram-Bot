@@ -64,12 +64,12 @@ def db(name: str):
 
 MENU_ITEMS = {
     "quran": "📖 قورئانی پیرۆز", "prayer": "🕌 کاتەکانی بانگ",
-    "kursi": "🕋 ئایەتی کورسی", "mushaf": "📖 مصحەف پەڕە بە پەڕە",
+    "kursi": "🕋 ئایەتی کورسی", "mushaf": "📖 مصحەف",
     "monthly": "🗓 کاتەکانی بانگی مانگانە", "tasbih": "📿 تەسبیح",
     "zikrakan": "📿 زیکرەکان", "dua": "🤲 دوعاکان",
     "hadith": "📜 فەرموودەکان", "pdf": "📚 کتێبخانەی PDF",
     "feedback": "💬 پێشنیار و ڕەخنە", "ramadan": "🌙 ڕەمەزان",
-    "names": "📿 ناوەکانی خودا", "quiz": "🧠 تاقیکردنەوە",
+    "names": "📿 ناوەکانی خودا",
     "reciters": "🎙️ قارییەکان", "search": "🔎 گەڕان",
     "topics": "📚 هەموو بابەتەکان", "favorites": "⭐ دڵخوازەکان",
     "lastread": "📍 دوا خوێندنەوە", "settings": "⚙️ ڕێکخستن",
@@ -84,7 +84,7 @@ def main_keyboard(uid=None):
     keys = valid + [key for key in DEFAULT_MENU_ORDER if key not in valid]
     buttons = [KeyboardButton(MENU_ITEMS[key]) for key in keys]
     rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
-    rows.append([KeyboardButton("🙈 شاردنەوەی مێنیو")])
+    rows.append([KeyboardButton("شاردنەوەی مێنیو")])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=False)
 
 def ik(rows):
@@ -228,7 +228,7 @@ async def show_menu_order(update, edit=False):
 async def show_settings(update, context=None):
     uid = update.effective_user.id
     city = get_city(uid)
-    city_label = city or "دیاری نەکراوە"
+    city_label = city_display_name(city) if city else "دیاری نەکراوە"
     qari_id = get_qari(uid)
     qari = next((r.get("name_ar", "نەزانراو") for r in load_json("dangakan")
                  if isinstance(r, dict) and str(r.get("id")) == str(qari_id)), "هەڵنەبژێردراو")
@@ -247,6 +247,13 @@ async def show_settings(update, context=None):
             [InlineKeyboardButton("📍 دوا خوێندنەوە", callback_data="lr")],
             [InlineKeyboardButton("↕️ ڕێکخستنی شوێنی بەشەکان", callback_data="mo:open")]
         ]), parse_mode=ParseMode.MARKDOWN)
+
+
+def city_display_name(city):
+    if not city:
+        return "دیاری نەکراوە"
+    return next((str(item.get("Name")) for item in load_json("cityme")
+                 if isinstance(item, dict) and str(item.get("id", "")).casefold() == str(city).casefold()), str(city))
 
 
 def get_cities():
@@ -271,6 +278,69 @@ async def show_suras(update, page=0, edit=False):
     text=f"📖 *سوڕەتەکانی قورئانی پیرۆز*\nلاپەڕە {page+1} لە 10 — سوڕەتێک هەڵبژێرە:"
     if edit: await update.callback_query.edit_message_text(text,reply_markup=markup,parse_mode=ParseMode.MARKDOWN)
     else: await update.effective_message.reply_text(text,reply_markup=markup,parse_mode=ParseMode.MARKDOWN)
+
+async def show_mushaf_menu(update, context):
+    context.user_data["mushaf_waiting_page"] = True
+    await update.effective_message.reply_text(
+        "📖 مصحەف\n\nسووڕەتێک هەڵبژێرە، یان ژمارەی پەڕەکە لە ١ تا ٦٠٤ بنووسە:",
+        reply_markup=ik([[InlineKeyboardButton("📚 هەڵبژاردنی سووڕەت", callback_data="ms:list")]])
+    )
+
+
+async def show_mushaf_surah_list(update, page=0, edit=False):
+    with db("surat.db") as conn:
+        rows = conn.execute("SELECT soraid,name,aya FROM surat ORDER BY soraid").fetchall()
+    chunk = rows[page*12:(page+1)*12]
+    buttons = [[InlineKeyboardButton(f"{sid}. {name}", callback_data=f"ms:{sid}")]
+               for sid, name, _ in chunk]
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"ms:list:{page-1}"))
+    if (page+1)*12 < len(rows):
+        nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"ms:list:{page+1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("✍️ نووسینی ژمارەی پەڕە", callback_data="ms:number")])
+    message = "📖 مصحەف — سووڕەتێک هەڵبژێرە:"
+    if edit:
+        await update.callback_query.edit_message_text(message, reply_markup=ik(buttons))
+    else:
+        await update.effective_message.reply_text(message, reply_markup=ik(buttons))
+
+
+async def show_mushaf_surah_pages(update, sid, page=0, edit=False):
+    info_path = DATA / "recitation_timings" / "ayah_info.db"
+    with db("regayislam.db") as conn:
+        conn.execute("ATTACH DATABASE ? AS info", (f"file:{info_path}?mode=ro",))
+        bounds = conn.execute(
+            "SELECT MIN(page_number), MAX(page_number) FROM info.page_data_line WHERE surah_id=?",
+            (sid,),
+        ).fetchone()
+    if not bounds or bounds[0] is None:
+        return await update.effective_message.reply_text("پەڕەکانی ئەم سووڕەتە لە داتابەیسدا نەدۆزرایەوە.")
+    first, last = int(bounds[0]), int(bounds[1])
+    page_size = 20
+    pages = list(range(first, last+1))
+    chunk = pages[page*page_size:(page+1)*page_size]
+    with db("surat.db") as conn:
+        row = conn.execute("SELECT name FROM surat WHERE soraid=?", (sid,)).fetchone()
+    name = row[0] if row else f"سووڕەتی {sid}"
+    buttons = [[InlineKeyboardButton(f"📄 پەڕەی {number}", callback_data=f"mpg:{number}")]
+               for number in chunk]
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"msp:{sid}:{page-1}"))
+    if (page+1)*page_size < len(pages):
+        nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"msp:{sid}:{page+1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔙 لیستی سووڕەتەکان", callback_data="ms:list:0")])
+    message = f"📖 سووڕەتی {name}\nپەڕەکان: {first} تا {last}\nپەڕەیەک هەڵبژێرە:"
+    if edit:
+        await update.callback_query.edit_message_text(message, reply_markup=ik(buttons))
+    else:
+        await update.effective_message.reply_text(message, reply_markup=ik(buttons))
+
 
 async def show_quran_page(update, page=1, edit=False):
     """Show the requested Mushaf page from the supplied page-image collection."""
@@ -390,17 +460,46 @@ async def show_ayahs(update, sid, offset=0, edit=False):
     if edit: await update.callback_query.edit_message_text(text,reply_markup=ik(buttons),parse_mode=ParseMode.MARKDOWN)
     else: await update.effective_message.reply_text(text,reply_markup=ik(buttons),parse_mode=ParseMode.MARKDOWN)
 
-async def show_tafsir(update,sid,ayah):
+async def show_tafsir(update,sid,ayah,selected=None):
     save_last_read(update.effective_user.id, sid, ((ayah-1)//8)*8)
     with db("regayislam.db") as c:
         r=c.execute("SELECT sura_name_ar,text,rebar,raman,puxta,asan,sanahi,hazhar,zhin,maiser,roshn,tawhid FROM ayah_text WHERE suraId=? AND ayah=?",(sid,ayah)).fetchone()
     if not r: return await update.callback_query.answer("ئایەت نەدۆزرایەوە",show_alert=True)
-    labels=["ڕوونکردنەوە ١","ڕوونکردنەوە ٢","پوختە","ڕوونکردنەوە ٣","ڕوونکردنەوە ٤","ڕوونکردنەوە ٥","ڕوونکردنەوە ٦","ڕوونکردنەوە ٧","ڕوونکردنەوە ٨","ڕوونکردنەوە ٩","ڕوونکردنەوە ١٠"]
-    fields=r[2:]
-    text=f"📖 {r[0]} — ئایەتی {ayah}\n\n{r[1]}\n"
-    for label,value in zip(labels,fields):
-        if value and str(value).strip(): text+=f"\n{label}:\n{str(value)[:2500]}\n"
-    await update.effective_message.reply_text(text[:3900],reply_markup=ik([[InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان",callback_data=f"fv:add:{sid}:{ayah}")],[InlineKeyboardButton("🔙 گەڕانەوە بۆ ئایەتەکان",callback_data=f"q:a:{sid}:{((ayah-1)//8)*8}")]]),disable_web_page_preview=True)
+    options = [
+        ("تەفسیری ڕێبەر", "rebar"), ("تەفسیری ڕامان", "raman"),
+        ("پوختەی تەفسیر", "puxta"), ("تەفسیری ئاسان", "asan"),
+        ("تەفسیری سەناهی", "sanahi"), ("تەفسیری هەژار", "hazhar"),
+        ("تەفسیری ژین", "zhin"), ("تەفسیری مایسەر", "maiser"),
+        ("تەفسیری ڕۆشن", "roshn"), ("تەفسیری تەوحید", "tawhid"),
+    ]
+    fields = r[2:]
+    heading = f"📖 {r[0]} — ئایەتی {ayah}"
+    buttons = []
+    if selected is None:
+        available = [(i, label, value) for i, ((label, _), value) in enumerate(zip(options, fields))
+                     if value and str(value).strip()]
+        if available:
+            index, label, value = available[0]
+            body = f"*{label}*\n\n{str(value)[:2600]}"
+        else:
+            body = "هیچ تەفسیرێک بۆ ئەم ئایەتە تۆمار نەکراوە."
+    elif selected == -1:
+        sections = [f"*{label}*\n{str(value)[:850]}" for (label, _), value in zip(options, fields)
+                    if value and str(value).strip()]
+        body = "\n\n".join(sections) if sections else "هیچ تەفسیرێک بۆ ئەم ئایەتە تۆمار نەکراوە."
+    else:
+        label, _ = options[selected]
+        value = fields[selected]
+        body = f"*{label}*\n\n{str(value)[:2600]}" if value and str(value).strip() else f"*{label}*\nئەم تەفسیرە بۆ ئەم ئایەتە بەتاڵە."
+    text = f"{heading}\n\n{r[1]}\n\n{body}"
+    buttons.append([InlineKeyboardButton("هەموو ١٠ تەفسیر", callback_data=f"q:tf:{sid}:{ayah}:-1")])
+    buttons.extend([[InlineKeyboardButton(label, callback_data=f"q:tf:{sid}:{ayah}:{i}")]
+                    for i, (label, _) in enumerate(options)])
+    buttons.append([InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان", callback_data=f"fv:add:{sid}:{ayah}")])
+    buttons.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ ئایەتەکان", callback_data=f"q:a:{sid}:{((ayah-1)//8)*8}")])
+    await update.effective_message.reply_text(text[:3900], reply_markup=ik(buttons),
+                                              parse_mode=ParseMode.MARKDOWN,
+                                              disable_web_page_preview=True)
 
 async def prayer_city_list(update, page=0, edit=False, mode="prayer"):
     cities=get_cities(); chunk=cities[page*12:(page+1)*12]
@@ -439,8 +538,7 @@ def dual_date_lines(value):
 
 
 async def prayer_times(update, city, edit=False):
-    city_names={x.get("Name"):x.get("id") for x in load_json("cityme") if isinstance(x,dict)}
-    city_display=next((name for name,table in city_names.items() if str(table).casefold()==str(city).casefold()),city)
+    city_display=city_display_name(city)
     with db("katenwezh62.db") as c:
         r=c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name=?",(city,)).fetchone()
         if not r:
@@ -472,8 +570,7 @@ async def monthly_prayer_times(update, city=None, month=None, edit=False):
     except ValueError:
         month_date = now.date().replace(day=1)
     month_key = month_date.strftime("%m")
-    city_names = {x.get("Name"): x.get("id") for x in load_json("cityme") if isinstance(x, dict)}
-    city_display = next((name for name, table in city_names.items() if str(table).casefold() == str(city).casefold()), city)
+    city_display = city_display_name(city)
     days_in_month = calendar.monthrange(month_date.year, month_date.month)[1]
     with db("katenwezh62.db") as conn:
         exists = conn.execute(
@@ -766,7 +863,7 @@ async def show_names(update,index=0):
     text=f"📿 *ناوەکانی خودا — {index+1}/100*\n\n*{r[0]}*\n{reference_line}"
     if ayah_text:
         text += f"\n\n{ayah_text}"
-    text += f"\n\n🇹🇯 واتا بە سۆرانی:\n{r[2]}\n\nواتا بە بادینی:\n{r[3]}\n\nEnglish: {r[4]}\nفارسی: {r[5]}"
+    text += f"\n\nواتا بە سۆرانی:\n{r[2]}\n\nواتا بە بادینی:\n{r[3]}\n\nEnglish: {r[4]}\nفارسی: {r[5]}"
     rows=[]
     nav=[]
     if index: nav.append(InlineKeyboardButton("⬅️ ناوی پێشوو",callback_data=f"nm:{index-1}"))
@@ -1053,7 +1150,7 @@ async def tasbih(update, context, change=0, edit=False):
     zikr_index = get_tasbih_zikr(uid)
     if zikr_index < 0 or zikr_index >= len(TASBIH_PHRASES):
         return await tasbih_picker(update, 0, edit)
-    count = change_tasbih(uid, change) if change else (get_tasbih(uid) or (0,))[0]
+    count = change_tasbih(uid, change, zikr_index) if change else (get_tasbih(uid, zikr_index) or (0,))[0]
     phrase = TASBIH_PHRASES[zikr_index]
     text = f"📿 تەسبیح\n\n{phrase}\n\nژمارە: {count}"
     rows = [
@@ -1228,6 +1325,11 @@ async def handle_text(update,context):
             return await update.effective_message.reply_text("⚠️ ناردنی وەڵامەکە سەرکەوتوو نەبوو.")
     if context.user_data.get("feedback_waiting"):
         return await receive_feedback(update, context, text)
+    if context.user_data.pop("mushaf_waiting_page", False):
+        if not text.isdigit() or not 1 <= int(text) <= 604:
+            context.user_data["mushaf_waiting_page"] = True
+            return await update.effective_message.reply_text("ژمارەی پەڕەکە لە ١ تا ٦٠٤ بنووسە.")
+        return await show_quran_page(update, int(text))
     if "search_mode" in context.user_data:
         return await do_search(update,context,text)
     mapping={
@@ -1235,9 +1337,9 @@ async def handle_text(update,context):
         "🕌 کاتەکانی بانگ":lambda:prayer_cmd(update,context),
         "🗓 کاتەکانی بانگی مانگانە":lambda:monthly_prayer_times(update),
         "🕋 ئایەتی کورسی":lambda:show_ayat_kursi(update),
-        "📖 مصحەف پەڕە بە پەڕە":lambda:show_quran_page(update,1),
+        "📖 مصحەف":lambda:show_mushaf_menu(update,context),
         "📿 تەسبیح":lambda:tasbih_picker(update),
-        "🙈 مێنیو بشارەوە":lambda:hide_menu_cmd(update,context),
+        "شاردنەوەی مێنیو":lambda:hide_menu_cmd(update,context),
         "📿 زیکرەکان":lambda:json_list(update,"zikrakan",0),
         "🤲 دوعاکان":lambda:show_dua(update,0),
         "📜 فەرموودەکان":lambda:hadith_menu(update),
@@ -1246,7 +1348,6 @@ async def handle_text(update,context):
         "🕋 تەوبە و ئامۆژگاری":lambda:repentance_menu(update),
          "🌙 ڕەمەزان":lambda:ramadan_menu(update),
         "📿 ناوەکانی خودا":lambda:names_menu(update,0),
-        "🧠 تاقیکردنەوە":lambda:quiz_start(update,context),
         "🎙️ قارییەکان":lambda:show_qari_menu(update,0),
         "📚 هەموو بابەتەکان":lambda:content_menu(update),
         "🔎 گەڕان":lambda:search_choose(update),
@@ -1342,7 +1443,6 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         if not 0 <= index < len(TASBIH_PHRASES):
             return await q.answer("زیکرەکە نەدۆزرایەوە.", show_alert=True)
         set_tasbih_zikr(q.from_user.id, index)
-        reset_tasbih(q.from_user.id)
         return await tasbih(update, context, 0, True)
     if data == "mo:open":
         return await show_menu_order(update, True)
@@ -1483,11 +1583,22 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             remove_favorite(q.from_user.id, int(data.split(":")[2]))
             return await show_favorites(update)
         if data.startswith("qp:"): return await show_quran_page(update,int(data.split(":")[1]),True)
+        if data == "ms:list": return await show_mushaf_surah_list(update,0,True)
+        if data.startswith("ms:list:"): return await show_mushaf_surah_list(update,int(data.split(":")[2]),True)
+        if data == "ms:number":
+            context.user_data["mushaf_waiting_page"] = True
+            return await q.message.reply_text("ژمارەی پەڕەکە لە ١ تا ٦٠٤ بنووسە:")
+        if data.startswith("ms:"): return await show_mushaf_surah_pages(update,int(data.split(":")[1]),0,True)
+        if data.startswith("msp:"):
+            _,sid,page=data.split(":"); return await show_mushaf_surah_pages(update,int(sid),int(page),True)
+        if data.startswith("mpg:"): return await show_quran_page(update,int(data.split(":")[1]),False)
         if data.startswith("q:s:"): return await show_suras(update,int(data.split(":")[2]),True)
         if data.startswith("q:a:"):
             _,_,sid,off=data.split(":"); return await show_ayahs(update,int(sid),int(off),True)
         if data.startswith("q:t:"):
             _,_,sid,ay=data.split(":"); return await show_tafsir(update,int(sid),int(ay))
+        if data.startswith("q:tf:"):
+            _,_,sid,ay,choice=data.split(":"); return await show_tafsir(update,int(sid),int(ay),int(choice))
         if data.startswith("pcl:"):
             bits=data.split(":")
             if len(bits)==3: return await prayer_city_list(update,int(bits[2]),True,bits[1])
@@ -1751,7 +1862,7 @@ async def menu_cmd(update,context):
 
 
 async def hide_menu_cmd(update,context):
-    await update.effective_message.reply_text("🙈 مێنیوی سەرەکی شاردراوەتەوە.\n\n📌 بۆ پیشاندانی دووبارە، /menu بنووسە.", reply_markup=ReplyKeyboardRemove())
+    await update.effective_message.reply_text("مێنیوی سەرەکی شاردراوەتەوە.\n\n📌 بۆ پیشاندانی دووبارە، /menu بنووسە.", reply_markup=ReplyKeyboardRemove())
 async def quran_cmd(update,context): await show_suras(update)
 async def prayer_cmd(update,context):
     city=get_city(update.effective_user.id)
