@@ -10,6 +10,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
@@ -60,7 +61,8 @@ def _upsert(table: str, row: dict):
 
 def save_user(uid: int, name: str, username: str):
     _upsert("bot_users", {
-        "user_id": uid, "name": name or "", "username": username or ""
+        "user_id": uid, "name": name or "", "username": username or "",
+        "last_seen": datetime.now(timezone.utc).isoformat()
     })
 
 
@@ -145,3 +147,39 @@ def change_tasbih(uid: int, change: int) -> int:
 def get_user_count() -> int:
     result = _request("POST", "rpc/bot_user_count", payload={})
     return int(result or 0)
+
+
+def list_users(limit: int = 10, offset: int = 0):
+    rows = _request(
+        "GET", "bot_users",
+        params={
+            "select": "user_id,name,username,created_at,last_seen",
+            "order": "last_seen.desc", "limit": str(limit), "offset": str(offset),
+        },
+    ) or []
+    return rows
+
+
+def get_admin_stats():
+    users = get_user_count()
+    favorites = _request("GET", "bot_favorites", params={"select": "id", "limit": "1", "Prefer": "count=exact"}) or []
+    last_reads = _request("GET", "bot_last_read", params={"select": "user_id", "limit": "1", "Prefer": "count=exact"}) or []
+    banned = _request("GET", "bot_bans", params={"select": "user_id", "limit": "1", "Prefer": "count=exact"}) or []
+    # PostgREST exact counts are returned in Content-Range; use lightweight row counts as a fallback.
+    return {"users": users, "favorites": len(_request("GET", "bot_favorites", params={"select": "id", "limit": "10000"}) or []),
+            "last_reads": len(_request("GET", "bot_last_read", params={"select": "user_id", "limit": "10000"}) or []),
+            "banned": len(_request("GET", "bot_bans", params={"select": "user_id", "limit": "10000"}) or [])}
+
+
+def is_banned(uid: int) -> bool:
+    rows = _request("GET", "bot_bans", params={"select": "user_id", "user_id": f"eq.{uid}", "limit": "1"}) or []
+    return bool(rows)
+
+
+def ban_user(uid: int, reason: str = ""):
+    _request("POST", "bot_bans", payload={"user_id": uid, "reason": reason or ""},
+             prefer="resolution=merge-duplicates,return=minimal")
+
+
+def unban_user(uid: int):
+    _request("DELETE", "bot_bans", params={"user_id": f"eq.{uid}"}, prefer="return=minimal")
