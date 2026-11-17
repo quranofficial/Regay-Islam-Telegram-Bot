@@ -473,7 +473,10 @@ async def show_tafsir(update,sid,ayah,selected=None):
         ("تەفسیری ڕۆشن", "roshn"), ("تەفسیری تەوحید", "tawhid"),
     ]
     fields = r[2:]
-    heading = f"📖 {r[0]} — ئایەتی {ayah}"
+    surah_title = str(r[0] or "").strip()
+    if not surah_title.startswith("سوڕەتی "):
+        surah_title = "سوڕەتی " + surah_title
+    heading = f"📖 {surah_title}، ئایەتی {ayah}"
     buttons = []
     if selected is None:
         available = [(i, label, value) for i, ((label, _), value) in enumerate(zip(options, fields))
