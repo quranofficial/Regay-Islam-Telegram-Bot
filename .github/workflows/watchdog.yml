@@ -48,19 +48,32 @@ jobs:
               print(f"Heartbeat age: {int(age)} seconds", file=sys.stderr)
           ' "${heartbeat_json}")"
 
-          active_runs="$(gh run list --workflow bot.yml --status in_progress --json databaseId --jq '.[].databaseId' || true)"
+          running_runs="$(gh run list --workflow bot.yml --status in_progress --json databaseId --jq '.[].databaseId' || true)"
+          queued_runs="$(gh run list --workflow bot.yml --status queued --json databaseId --jq '.[].databaseId' || true)"
 
-          if [[ "${heartbeat_state}" == "fresh" && -n "${active_runs}" ]]; then
-            echo "Bot heartbeat is fresh and a bot workflow is running."
+          if [[ "${heartbeat_state}" == "fresh" && -n "${running_runs}" ]]; then
+            echo "Bot heartbeat is fresh and the bot is running."
+            if [[ -n "${queued_runs}" ]]; then
+              while IFS= read -r run_id; do
+                [[ -z "${run_id}" ]] && continue
+                gh run cancel "${run_id}" || true
+              done <<< "${queued_runs}"
+            fi
             exit 0
           fi
 
-          echo "Bot heartbeat is stale or no bot workflow is active; restarting."
-          if [[ -n "${active_runs}" ]]; then
+          if [[ "${heartbeat_state}" == "fresh" && -z "${running_runs}" && -n "${queued_runs}" ]]; then
+            echo "A bot run is queued and the last heartbeat is still fresh; waiting for that run."
+            exit 0
+          fi
+
+          echo "Bot heartbeat is stale or no bot run is active; restarting."
+          all_runs="$(printf '%s\n%s\n' "${running_runs}" "${queued_runs}" | sed '/^$/d')"
+          if [[ -n "${all_runs}" ]]; then
             while IFS= read -r run_id; do
               [[ -z "${run_id}" ]] && continue
               gh run cancel "${run_id}" || true
-            done <<< "${active_runs}"
+            done <<< "${all_runs}"
           fi
 
           sleep 5
