@@ -1149,12 +1149,38 @@ async def play_qari_surah(update,context,index,sid):
                 duration = float(probe.stdout.strip())
                 segment_seconds = max(60, int(duration * (max_part_bytes * 0.88 / len(audio_data))))
                 pattern = os.path.join(temp_dir, "part-%03d.mp3")
-                subprocess.run(
-                    ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", source,
-                     "-map", "0:a:0", "-c", "copy", "-f", "segment",
-                     "-segment_time", str(segment_seconds), "-reset_timestamps", "1", pattern],
-                    capture_output=True, text=True, timeout=600, check=True,
+                split_command = [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", source,
+                    "-map", "0:a:0", "-vn", "-sn", "-dn", "-c:a", "copy",
+                    "-f", "segment", "-segment_format", "mp3",
+                    "-segment_time", str(segment_seconds), "-reset_timestamps", "1", pattern,
+                ]
+                split_result = subprocess.run(
+                    split_command, capture_output=True, text=True, timeout=600,
                 )
+                if split_result.returncode != 0:
+                    # Some MP3 streams cannot be stream-copied by the segment muxer.
+                    # Retry by decoding and encoding standard MP3 segments.
+                    log.warning(
+                        "Lossless MP3 split failed; retrying with MP3 re-encode: %s",
+                        (split_result.stderr or "unknown ffmpeg error")[-2000:],
+                    )
+                    for old_part in Path(temp_dir).glob("part-*.mp3"):
+                        old_part.unlink()
+                    encode_command = [
+                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", source,
+                        "-map", "0:a:0", "-vn", "-sn", "-dn",
+                        "-c:a", "libmp3lame", "-b:a", "128k",
+                        "-f", "segment", "-segment_format", "mp3",
+                        "-segment_time", str(segment_seconds),
+                        "-reset_timestamps", "1", pattern,
+                    ]
+                    encode_result = subprocess.run(
+                        encode_command, capture_output=True, text=True, timeout=1200,
+                    )
+                    if encode_result.returncode != 0:
+                        detail = (encode_result.stderr or split_result.stderr or "unknown ffmpeg error")[-2500:]
+                        raise RuntimeError(f"FFmpeg could not split this audio: {detail}")
                 parts = sorted(
                     os.path.join(temp_dir, name) for name in os.listdir(temp_dir)
                     if name.startswith("part-") and name.endswith(".mp3")
