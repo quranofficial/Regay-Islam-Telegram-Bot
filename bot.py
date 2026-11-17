@@ -1446,7 +1446,10 @@ async def runtime_heartbeat_loop():
 
 
 async def post_init(app):
-    await asyncio.to_thread(touch_runtime_heartbeat, "running")
+    try:
+        await asyncio.to_thread(touch_runtime_heartbeat, "running")
+    except Exception:
+        log.exception("Initial runtime heartbeat failed; continuing bot startup")
     app.create_task(runtime_heartbeat_loop(), name="runtime-heartbeat-loop")
     app.create_task(prayer_notification_loop(app), name="prayer-notification-loop")
     await app.bot.set_my_commands([
