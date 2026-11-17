@@ -740,6 +740,12 @@ async def admin_stats(update, edit=False):
     else: await update.effective_message.reply_text(text, reply_markup=markup)
 
 
+async def cmd_cancel(update, context):
+    if context.user_data.pop("admin_broadcast_waiting", None):
+        return await update.effective_message.reply_text("❎ ناردنی پەیامی گشتی هەڵوەشایەوە.")
+    await update.effective_message.reply_text("هیچ کردارێکی چاوەڕوانکراو نییە.")
+
+
 async def cmd_admin(update,context):
     if update.effective_user.id not in ADMIN_IDS:
         return await update.effective_message.reply_text("⛔ دەسەڵاتی بەڕێوەبەریت نییە.")
@@ -814,7 +820,7 @@ def main():
     app.add_handler(MessageHandler(filters.ALL, block_banned), group=-1)
     app.add_handler(CallbackQueryHandler(block_banned), group=-1)
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("menu",menu_cmd)); app.add_handler(CommandHandler("help",help_cmd))
-    app.add_handler(CommandHandler("quran",quran_cmd)); app.add_handler(CommandHandler("prayer",prayer_cmd)); app.add_handler(CommandHandler("search",cmd_search)); app.add_handler(CommandHandler("admin",cmd_admin))
+    app.add_handler(CommandHandler("quran",quran_cmd)); app.add_handler(CommandHandler("prayer",prayer_cmd)); app.add_handler(CommandHandler("search",cmd_search)); app.add_handler(CommandHandler("admin",cmd_admin)); app.add_handler(CommandHandler("cancel",cmd_cancel))
     app.add_handler(CommandHandler("favorites",show_favorites)); app.add_handler(CommandHandler("lastread",show_last_read)); app.add_handler(CommandHandler("settings",show_settings))
     app.add_handler(CallbackQueryHandler(callback)); app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text)); app.add_error_handler(error_handler)
     log.info("ڕێگای ئیسلام bot starting")
