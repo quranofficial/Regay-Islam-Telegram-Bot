@@ -921,8 +921,8 @@ async def ramadan_item(update, table, rid):
     if not row:
         return await update.callback_query.answer("بابەت نەدۆزرایەوە.", show_alert=True)
     await update.effective_message.reply_text(
-        f"🌙 *{row[0]}*\n\n{row[1][:3700]}",
-        parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True,
+        f"🌙 {row[0]}\n\n{row[1][:3700]}",
+        disable_web_page_preview=True,
         reply_markup=ik([[InlineKeyboardButton("🔙 گەڕانەوە بۆ بەش", callback_data=f"rd:{table}:0")]])
     )
 
@@ -1033,8 +1033,8 @@ async def pdf_book_item(update, index, page=0):
         buttons.append([InlineKeyboardButton("📖 کردنەوەی کتێب (PDF)", url=url)])
     buttons.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ کتێبخانە", callback_data=f"pb:list:{page}")])
     await update.callback_query.edit_message_text(
-        f"📚 *{title}*\n\n✍️ نووسەر: {author}\n\n{about_text[:2500]}",
-        reply_markup=ik(buttons), parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True
+        f"📚 {title}\n\n✍️ نووسەر: {author}\n\n{about_text[:2500]}",
+        reply_markup=ik(buttons), disable_web_page_preview=True
     )
 
 async def do_search(update,context,query):
