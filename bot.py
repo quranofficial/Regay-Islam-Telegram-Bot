@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from telegram.constants import ParseMode
 from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from supabase_store import (is_configured, save_user, get_city, set_city, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user)
+from supabase_store import (is_configured, save_user, get_city, set_city, get_qari, set_qari, is_setup_completed, set_setup_completed, save_feedback, touch_runtime_heartbeat, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user)
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -67,6 +67,7 @@ def main_keyboard():
         [KeyboardButton("🗓 کاتەکانی بانگی مانگانە")],
         [KeyboardButton("🧭 ئاراستەی قیبلە"), KeyboardButton("📿 تەسبیح و زیکر")],
         [KeyboardButton("🤲 دوعاکان"), KeyboardButton("📚 کتێب و فەرموودە")],
+        [KeyboardButton("📚 کتێبخانەی PDF"), KeyboardButton("💬 پێشنیار و ڕەخنە")],
         [KeyboardButton("🌙 ڕەمەزان"), KeyboardButton("✨ ناوەکانی خودا")],
         [KeyboardButton("🧠 تاقیکردنەوە"), KeyboardButton("🎙️ قارییەکان")],
         [KeyboardButton("🔎 گەڕان"), KeyboardButton("📚 هەموو بابەتەکان")],
@@ -92,12 +93,77 @@ async def send_text(update: Update, text: str, reply_markup=None, parse_mode=Non
         await update.effective_message.reply_text(part, reply_markup=reply_markup if i == len(cut(text))-1 else None, parse_mode=parse_mode, disable_web_page_preview=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user=update.effective_user
+    user = update.effective_user
     save_user(user.id, user.first_name or "", user.username or "")
-    text=("🕌 *بەخێربێیت بۆ ڕێگای ئیسلام*\n\n"
-          "ئەم بۆتە وەشانی Telegram ـی ئەپی ڕێگای ئیسلامە. زانیاری و ناوەڕۆکی بنەڕەتی لە سەرچاوەی ئەپەکەتەوە گوازراوەتەوە.\n\n"
-          "📖 قورئان و ڕوونکردنەوە\n🕌 کاتەکانی بانگ بۆ شارەکانی کوردستان\n🧭 قیبلە، دوعا، زیکر و تەسبیح\n📚 فەرموودە، کتێب و بابەتە ئایینییەکان\n🌙 ڕەمەزان و ناوەکانی خودا\n\nهەڵبژاردنێک لە مێنیوەکە بکە.")
+    if not is_setup_completed(user.id):
+        await update.effective_message.reply_text(
+            "🕌 بەخێربێیت بۆ ڕێگای ئیسلام\n\n"
+            "تەنها یەک جار ڕێکخستنی سەرەتایی ئەنجام بدە: شارەکەت و قاریی دڵخوازت هەڵبژێرە. "
+            "زانیارییەکانت پاشەکەوت دەکرێن و دواتر لە ⚙️ ڕێکخستن دەتوانیت بیگۆڕیت."
+        )
+        return await setup_city_menu(update, 0)
+    text = ("🕌 *بەخێربێیتەوە بۆ ڕێگای ئیسلام*\n\n"
+            "ڕێکخستنە سەرەتاییەکانت پاشەکەوت کراون.\n"
+            "📖 قورئان و مووسحەف\n🕌 کاتەکانی بانگ\n🎙️ قارییەکان\n"
+            "📚 کتێب و فەرموودە\n🌙 ڕەمەزان\n📿 تەسبیح و زیکر\n\n"
+            "هەڵبژاردنێک لە مێنیوەکە بکە.")
     await update.effective_message.reply_text(text, reply_markup=main_keyboard(), parse_mode=ParseMode.MARKDOWN)
+
+
+def setup_city_menu(update, page=0, edit=False):
+    cities = get_cities()
+    page_size = 10
+    chunk = cities[page * page_size:(page + 1) * page_size]
+    rows = [[InlineKeyboardButton(name, callback_data=f"setup:city:{table}")]
+            for name, table, lat, lon in chunk]
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"setup:citypage:{page-1}"))
+    if (page + 1) * page_size < len(cities):
+        nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"setup:citypage:{page+1}"))
+    if nav:
+        rows.append(nav)
+    text = "🏙 یەکەم شارەکەت هەڵبژێرە بۆ کاتەکانی بانگ:"
+    if edit:
+        return update.callback_query.edit_message_text(text, reply_markup=ik(rows))
+    return update.effective_message.reply_text(text, reply_markup=ik(rows))
+
+
+def setup_qari_menu(update, page=0, edit=False, settings=False):
+    reciters = [r for r in load_json("dangakan")
+                if isinstance(r, dict) and str(r.get("doxx", "")).lower() == "true" and r.get("url")]
+    page_size = 10
+    chunk = reciters[page * page_size:(page + 1) * page_size]
+    prefix = "st:qari" if settings else "setup:reciter"
+    rows = []
+    for item in chunk:
+        rid = str(item.get("id", ""))
+        name = str(item.get("name_ar") or f"قاری {rid}").strip()
+        timing = "🕒" if (DATA / "recitation_timings" / f"{rid}.db").is_file() else "—"
+        rows.append([InlineKeyboardButton(f"{timing} {name}"[:58], callback_data=f"{prefix}:{rid}")])
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"st:qpage:{page-1}" if settings else f"setup:qpage:{page-1}"))
+    if (page + 1) * page_size < len(reciters):
+        nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"st:qpage:{page+1}" if settings else f"setup:qpage:{page+1}"))
+    if nav:
+        rows.append(nav)
+    text = "🎙️ قاریی دڵخوازت هەڵبژێرە\n🕒 = داتای کاتی ئایەت بەردەستە"
+    if edit:
+        return update.callback_query.edit_message_text(text, reply_markup=ik(rows))
+    return update.effective_message.reply_text(text, reply_markup=ik(rows))
+
+
+async def finish_setup(update, uid, qari_id, settings=False):
+    set_qari(uid, str(qari_id))
+    set_setup_completed(uid, True)
+    if settings:
+        return await update.callback_query.edit_message_text("✅ قاریی دڵخوازت پاشەکەوت کرا.")
+    await update.callback_query.edit_message_text(
+        "✅ ڕێکخستنەکانت پاشەکەوت کران. لە داهاتوودا داوایان لێ ناکرێتەوە؛ "
+        "هەر کاتێک بتەوێت لە ⚙️ ڕێکخستن دەستکارییان بکە."
+    )
+    await update.effective_message.reply_text("🕌 بەخێربێیت بۆ ڕێگای ئیسلام.", reply_markup=main_keyboard())
 
 async def show_favorites(update, context=None):
     uid = update.effective_user.id
@@ -129,15 +195,19 @@ async def show_settings(update, context=None):
     uid = update.effective_user.id
     city = get_city(uid)
     city_label = city or "دیاری نەکراوە"
+    qari_id = get_qari(uid)
+    qari = next((r.get("name_ar", "نەزانراو") for r in load_json("dangakan")
+                 if isinstance(r, dict) and str(r.get("id")) == str(qari_id)), "هەڵنەبژێردراو")
     row = get_tasbih(uid)
     tasbih_count = row[0] if row else 0
     notifications = get_prayer_notifications(uid)
     notify_label = "🟢 چالاکە" if notifications else "🔴 ناچالاکە"
     notify_action = "off" if notifications else "on"
     await update.effective_message.reply_text(
-        f"⚙️ *ڕێکخستنەکانی من*\n\n🏙 شاری هەڵبژێردراو: {city_label}\n📿 ژمارەی تەسبیح: {tasbih_count}\n🔔 ئاگادارکردنەوەی کاتی بانگ: {notify_label}\n\nدەتوانیت شاری خۆت بگۆڕیت؛ ئەو شارە بۆ کاتەکانی بانگ و قیبلە و ئاگادارکردنەوە بەکاردێت.",
+        f"⚙️ *ڕێکخستنەکانی من*\n\n🏙 شاری هەڵبژێردراو: {city_label}\n🎙️ قاری: {qari}\n📿 ژمارەی تەسبیح: {tasbih_count}\n🔔 ئاگادارکردنەوەی کاتی بانگ: {notify_label}\n\nشار و قارییەکەت پاشەکەوت دەکرێن و دەتوانیت لێرە بیگۆڕیت.",
         reply_markup=ik([
             [InlineKeyboardButton("🏙 گۆڕینی شار", callback_data="st:city")],
+            [InlineKeyboardButton("🎙️ گۆڕینی قاری", callback_data="st:qari:menu")],
             [InlineKeyboardButton(("🔕 ناچالاککردنی ئاگادارکردنەوە" if notifications else "🔔 چالاککردنی ئاگادارکردنەوە"), callback_data=f"st:notify:{notify_action}")],
             [InlineKeyboardButton("⭐ دڵخوازەکان", callback_data="fv:list")],
             [InlineKeyboardButton("📍 دوا خوێندنەوە", callback_data="lr")]
