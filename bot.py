@@ -55,8 +55,7 @@ def load_json(key: str) -> list:
         with open(DATA / filename, "r", encoding="utf-8") as f:
             value = json.load(f)
         value = value if isinstance(value, list) else []
-        if key == "zikrakan":
-            value = value[1:127]
+        # Show every record from zikrakan.json without trimming.
         _json_cache[key] = value
     return _json_cache[key]
 
