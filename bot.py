@@ -7,6 +7,7 @@ from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, BotCommand
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from supabase_store import (is_configured, save_user, get_city, set_city, get_qari, set_qari, is_setup_completed, set_setup_completed, save_feedback, touch_runtime_heartbeat, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user, get_tasbih_zikr, set_tasbih_zikr, get_menu_order, set_menu_order)
 
@@ -866,14 +867,22 @@ async def send_asset_file(update, context, item):
         stream = io.BytesIO(payload)
         stream.name = filename
         chat_id = update.effective_chat.id
-        if suffix in (".mp3", ".m4a", ".wav", ".ogg", ".flac"):
-            await context.bot.send_audio(chat_id=chat_id, audio=stream, caption=title[:1024], title=title[:64])
-        elif suffix in (".mp4", ".mov", ".m4v"):
-            await context.bot.send_video(chat_id=chat_id, video=stream, caption=title[:1024], supports_streaming=True)
-        elif suffix in (".jpg", ".jpeg", ".png", ".webp"):
-            await context.bot.send_photo(chat_id=chat_id, photo=stream, caption=title[:1024])
-        else:
-            await context.bot.send_document(chat_id=chat_id, document=stream, caption=title[:1024], filename=filename)
+        try:
+            if suffix in (".mp3", ".m4a", ".wav", ".ogg", ".flac"):
+                await context.bot.send_audio(chat_id=chat_id, audio=stream, caption=title[:1024], title=title[:64])
+            elif suffix in (".mp4", ".mov", ".m4v"):
+                await context.bot.send_video(chat_id=chat_id, video=stream, caption=title[:1024], supports_streaming=True)
+            elif suffix in (".jpg", ".jpeg", ".png", ".webp"):
+                await context.bot.send_photo(chat_id=chat_id, photo=stream, caption=title[:1024])
+            else:
+                await context.bot.send_document(chat_id=chat_id, document=stream, caption=title[:1024], filename=filename)
+        except BadRequest as media_error:
+            # Some valid files are rejected by Telegram's media parser; retry as a plain document.
+            log.warning("Telegram rejected %s as media; retrying as document: %s", filename, media_error)
+            stream.seek(0)
+            await context.bot.send_document(
+                chat_id=chat_id, document=stream, caption=title[:1024], filename=filename
+            )
         try:
             await status.delete()
         except Exception:
@@ -891,7 +900,11 @@ async def send_asset_file(update, context, item):
         elif isinstance(exc, ValueError):
             message = "⚠️ فایلەکە بەتاڵە یان لە سنووری قەبارەی ڕێگەپێدراوی Telegram گەورەترە."
         elif downloaded:
-            message = "⚠️ فایلەکە بە سەرکەوتوویی دابەزێنرا، بەڵام Telegram نەیتوانی بینێرێت. قەبارە یان جۆری فایلەکە پشکنین بکە."
+            detail = str(exc).strip().replace("\\n", " ")[:220]
+            message = (
+                "⚠️ فایلەکە دابەزێنرا، بەڵام Telegram ناردنی قبوڵ نەکرد.\\n"
+                f"🔎 هۆکار: {detail or type(exc).__name__}"
+            )
         else:
             message = "⚠️ لە کاتی دابەزاندنی فایلەکەدا هەڵەیەک ڕوویدا. هۆکاری ورد لە لۆگی بۆتەکە تۆمار کراوە."
         try:
