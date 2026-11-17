@@ -19,7 +19,7 @@ log = logging.getLogger("regay_islam")
 
 # JSON collections copied without content rewriting from the supplied app.
 JSON_FILES = {
-    "farmwda": ("فەرموودەی پێغەمبەر ﷺ", "farmwda.json"),
+    "farmwda": ("فەرموودە هەڵبژێردراوەکان", "farmwda.json"),
     "zikrakan": ("زیکرەکان", "zikrakan.json"),
     "duha": ("دوعا و پاڕانەوە", "duha.json"),
     "pexambarman": ("ژیانی پێغەمبەرمان ﷺ", "pexambarman.json"),
@@ -54,7 +54,10 @@ def load_json(key: str) -> list:
         filename = JSON_FILES[key][1]
         with open(DATA / filename, "r", encoding="utf-8") as f:
             value = json.load(f)
-        _json_cache[key] = value if isinstance(value, list) else []
+        value = value if isinstance(value, list) else []
+        if key == "zikrakan":
+            value = value[:126]
+        _json_cache[key] = value
     return _json_cache[key]
 
 def db(name: str):
@@ -63,11 +66,11 @@ def db(name: str):
 MENU_ITEMS = {
     "quran": "📖 قورئانی پیرۆز", "prayer": "🕌 کاتەکانی بانگ",
     "kursi": "🕋 ئایەتی کورسی", "mushaf": "📖 مصحەف پەڕە بە پەڕە",
-    "monthly": "🗓 کاتەکانی بانگی مانگانە", "qibla": "🧭 ئاراستەی قیبلە",
-    "tasbih": "📿 تەسبیح و زیکر", "dua": "🤲 دوعاکان",
+    "monthly": "🗓 کاتەکانی بانگی مانگانە", "tasbih": "📿 تەسبیح",
+    "zikrakan": "📿 زیکرەکان", "dua": "🤲 دوعاکان",
     "hadith": "📜 فەرموودەکان", "pdf": "📚 کتێبخانەی PDF",
     "feedback": "💬 پێشنیار و ڕەخنە", "ramadan": "🌙 ڕەمەزان",
-    "names": "✨ ناوەکانی خودا", "quiz": "🧠 تاقیکردنەوە",
+    "names": "📿 ناوەکانی خودا", "quiz": "🧠 تاقیکردنەوە",
     "reciters": "🎙️ قارییەکان", "search": "🔎 گەڕان",
     "topics": "📚 هەموو بابەتەکان", "favorites": "⭐ دڵخوازەکان",
     "lastread": "📍 دوا خوێندنەوە", "settings": "⚙️ ڕێکخستن",
@@ -82,7 +85,8 @@ def main_keyboard(uid=None):
     keys = valid + [key for key in DEFAULT_MENU_ORDER if key not in valid]
     buttons = [KeyboardButton(MENU_ITEMS[key]) for key in keys]
     rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
+    rows.append([KeyboardButton("🙈 مێنیو بشارەوە")])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=False)
 
 def ik(rows):
     return InlineKeyboardMarkup(rows)
@@ -780,7 +784,7 @@ async def names_menu(update, page=0, edit=False):
     if page: nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"nml:{page-1}"))
     if page+1 < total_pages: nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"nml:{page+1}"))
     if nav: buttons.append(nav)
-    text = f"✨ ناوەکانی خوای گەورە — {len(rows)} ناو\nناوێک هەڵبژێرە بۆ بینینی واتا و ئاماژەکانی."
+    text = f" ناوەکانی خوای گەورە — {len(rows)} ناو\nناوێک هەڵبژێرە بۆ بینینی واتا و ئاماژەکانی."
     if edit: await update.callback_query.edit_message_text(text, reply_markup=ik(buttons))
     else: await update.effective_message.reply_text(text, reply_markup=ik(buttons))
 
@@ -788,7 +792,7 @@ async def names_menu(update, page=0, edit=False):
 async def show_names(update,index=0):
     with db("name.db") as c: r=c.execute("SELECT arabic,surah_ayah,sorani,badini,english,farsi FROM name ORDER BY _id LIMIT 1 OFFSET ?",(index,)).fetchone()
     if not r: return
-    text=f"✨ *ناوەکانی خودا — {index+1}/100*\n\n*{r[0]}*\n📖 شوێنی ئاماژە: {r[1]}\n\n🇹🇯 واتا بە سۆرانی:\n{r[2]}\n\nواتا بە بادینی:\n{r[3]}\n\nEnglish: {r[4]}\nفارسی: {r[5]}"
+    text=f" *ناوەکانی خودا — {index+1}/100*\n\n*{r[0]}*\n📖 شوێنی ئاماژە: {r[1]}\n\n🇹🇯 واتا بە سۆرانی:\n{r[2]}\n\nواتا بە بادینی:\n{r[3]}\n\nEnglish: {r[4]}\nفارسی: {r[5]}"
     rows=[]
     nav=[]
     if index: nav.append(InlineKeyboardButton("⬅️ ناوی پێشوو",callback_data=f"nm:{index-1}"))
@@ -1238,16 +1242,15 @@ async def handle_text(update,context):
         "🗓 کاتەکانی بانگی مانگانە":lambda:monthly_prayer_times(update),
         "🕋 ئایەتی کورسی":lambda:show_ayat_kursi(update),
         "📖 مصحەف پەڕە بە پەڕە":lambda:show_quran_page(update,1),
-        "🧭 ئاراستەی قیبلە":lambda:request_qibla_location(update),
-        "📿 تەسبیح و زیکر":lambda:tasbih(update,context),
+        "📿 تەسبیح":lambda:tasbih_picker(update),
+        "📿 زیکرەکان":lambda:json_list(update,"zikrakan",0),
         "🤲 دوعاکان":lambda:show_dua(update,0),
-        "📜 فەرموودەکان":lambda:json_list(update,"farmwda",0),
+        "📜 فەرموودەکان":lambda:hadith_menu(update),
         "📚 کتێبخانەی PDF":lambda:pdf_books_menu(update),
         "💬 پێشنیار و ڕەخنە":lambda:feedback_prompt(update),
         "🕋 تەوبە و ئامۆژگاری":lambda:repentance_menu(update),
-        "📜 ٤٠٠ فەرموودە":lambda:json_list(update,"farmwda",0),
-        "🌙 ڕەمەزان":lambda:ramadan_menu(update),
-        "✨ ناوەکانی خودا":lambda:names_menu(update,0),
+         "🌙 ڕەمەزان":lambda:ramadan_menu(update),
+        "📿 ناوەکانی خودا":lambda:names_menu(update,0),
         "🧠 تاقیکردنەوە":lambda:quiz_start(update,context),
         "🎙️ قارییەکان":lambda:show_qari_menu(update,0),
         "📚 هەموو بابەتەکان":lambda:content_menu(update),
