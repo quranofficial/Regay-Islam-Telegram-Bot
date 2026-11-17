@@ -506,6 +506,9 @@ async def show_quran_page(update, page=1, edit=False):
         f"page{page:03d}.png"
     )
     caption = f"📖 مصحەفی قورئانی پیرۆز — پەڕەی {page}/604"
+    progress = await update.effective_message.reply_text(
+        f"⏳ پەڕەی {page} ئامادە دەکرێت...\\n📥 وەرگرتنی زانیاریی پەڕە"
+    )
 
     # Keep the page-to-ayah map for last-read tracking and the reciter shortcut.
     with db("regayislam.db") as conn:
@@ -536,19 +539,34 @@ async def show_quran_page(update, page=1, edit=False):
     buttons.append([InlineKeyboardButton("📚 لیستی سووڕەتەکان", callback_data="ms:list:0")])
     markup = ik(buttons)
 
-    if edit:
-        # Telegram cannot turn a text message into a photo by editing its media.
-        sent = await update.effective_message.reply_photo(
-            photo=image_url, caption=caption, reply_markup=markup
+    try:
+        await progress.edit_text(
+            f"⏳ پەڕەی {page} ئامادە دەکرێت...\\n📤 ناردنی وێنە بۆ تێلێگرام"
         )
+        if edit:
+            # Telegram cannot turn a text message into a photo by editing its media.
+            sent = await update.effective_message.reply_photo(
+                photo=image_url, caption=caption, reply_markup=markup
+            )
+            try:
+                await update.effective_message.delete()
+            except Exception:
+                log.warning("Could not remove previous Mushaf navigation message")
+        else:
+            sent = await update.effective_message.reply_photo(
+                photo=image_url, caption=caption, reply_markup=markup
+            )
         try:
-            await update.effective_message.delete()
+            await progress.delete()
         except Exception:
-            log.warning("Could not remove previous Mushaf navigation message")
+            pass
         return sent
-    return await update.effective_message.reply_photo(
-        photo=image_url, caption=caption, reply_markup=markup
-    )
+    except Exception:
+        try:
+            await progress.edit_text("⚠️ ناردنی وێنەی پەڕەکە سەرکەوتوو نەبوو؛ تکایە دووبارە هەوڵ بدەرەوە.")
+        except Exception:
+            pass
+        raise
 
 async def send_ayat_kursi_audio(update, context):
     audio_url = "https://cdn.islamic.network/quran/audio/128/ar.alafasy/262.mp3"
@@ -791,6 +809,9 @@ async def send_asset_file(update, context, item):
 
         payload = await asyncio.to_thread(download_asset)
         downloaded = True
+        await status.edit_text(
+            f"✅ فایلەکە وەرگیرا ({len(payload) // (1024*1024)} MB).\\n📤 ئێستا بۆ تێلێگرام دەنێردرێت..."
+        )
         stream = io.BytesIO(payload)
         stream.name = filename
         chat_id = update.effective_chat.id
