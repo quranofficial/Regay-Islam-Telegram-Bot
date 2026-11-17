@@ -187,14 +187,14 @@ async def show_quran_page(update, page=1, edit=False):
     if not rows:
         return await update.effective_message.reply_text("ئەم پەڕەیە لە داتای مصحەفدا نەدۆزرایەوە.")
     save_last_read(update.effective_user.id, rows[0][0], 0)
-    parts = [f"📖 *مصحەفی قورئانی پیرۆز — پەڕەی {page}/604*\\n"]
+    parts = [f"📖 *مصحەفی قورئانی پیرۆز — پەڕەی {page}/604*\n"]
     last_surah = None
     for sid, ayah, surah_name, arabic, line_no in rows:
         if sid != last_surah:
-            parts.append(f"\\n*{surah_name}*")
+            parts.append(f"\n*{surah_name}*")
             last_surah = sid
         parts.append(f"﴿{ayah}﴾ {arabic}")
-    text = "\\n".join(parts)
+    text = "\n".join(parts)
     buttons = []
     nav = []
     if page > 1:
