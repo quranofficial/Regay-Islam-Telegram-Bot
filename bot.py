@@ -564,8 +564,11 @@ async def show_qari_menu(update,page=0,edit=False):
     reciters=[r for r in load_json("dangakan") if isinstance(r,dict) and str(r.get("doxx"," ")).lower()=="true" and r.get("url")]
     start=page*10
     rows=[]
+    selected_qari = get_qari(update.effective_user.id)
     for i,item in enumerate(reciters[start:start+10],start=start):
         label=str(item.get("name_ar") or f"قاری {i+1}").strip()
+        if str(item.get("id")) == str(selected_qari):
+            label = "⭐ قاریی من — " + label
         rows.append([InlineKeyboardButton(label[:58],callback_data=f"qr:pick:{i}")])
     nav=[]
     if page: nav.append(InlineKeyboardButton("⬅️ پێشوو",callback_data=f"qr:list:{page-1}"))
@@ -1414,7 +1417,18 @@ async def prayer_notification_loop(app):
         await asyncio.sleep(25)
 
 
+async def runtime_heartbeat_loop():
+    while True:
+        try:
+            await asyncio.to_thread(touch_runtime_heartbeat, "running")
+        except Exception:
+            log.exception("Runtime heartbeat update failed")
+        await asyncio.sleep(60)
+
+
 async def post_init(app):
+    await asyncio.to_thread(touch_runtime_heartbeat, "running")
+    app.create_task(runtime_heartbeat_loop(), name="runtime-heartbeat-loop")
     app.create_task(prayer_notification_loop(app), name="prayer-notification-loop")
     await app.bot.set_my_commands([
         BotCommand("start","دەستپێکردن"), BotCommand("menu","مێنیوی سەرەکی"),
