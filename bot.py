@@ -591,6 +591,10 @@ async def show_qari_surahs(update,index):
     await update.callback_query.edit_message_text(f"🎙️ *{title}*\n\nسوڕەتێک هەڵبژێرە بۆ گوێگرتن:",reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
 
 async def qari_ayah_guide(update, reciter_id, sid, page=0, edit=False):
+    with db("surat.db") as conn:
+        surah = conn.execute("SELECT name,aya FROM surat WHERE soraid=?", (sid,)).fetchone()
+    if not surah:
+        return await update.effective_message.reply_text("سوڕەتەکە نەدۆزرایەوە.")
     timing_path = DATA / "recitation_timings" / f"{reciter_id}.db"
     if not timing_path.is_file():
         text = "⚠️ داتای کاتی ئایەت بۆ ئەم قارییە بەردەست نییە."
@@ -599,8 +603,8 @@ async def qari_ayah_guide(update, reciter_id, sid, page=0, edit=False):
         return await update.effective_message.reply_text(text)
     with sqlite3.connect(f"file:{timing_path}?mode=ro", uri=True) as conn:
         timings = conn.execute(
-            "SELECT ayah,time FROM timings WHERE sura=? ORDER BY ayah LIMIT 8 OFFSET ?",
-            (sid, page * 8)
+            "SELECT ayah,time FROM timings WHERE sura=? AND ayah BETWEEN 1 AND ? ORDER BY ayah LIMIT 8 OFFSET ?",
+            (sid, int(surah[1]), page * 8)
         ).fetchall()
     if not timings:
         text = "کاتی ئایەت بۆ ئەم سوڕەتە نەدۆزرایەوە."
@@ -612,10 +616,8 @@ async def qari_ayah_guide(update, reciter_id, sid, page=0, edit=False):
             "SELECT ayah,text FROM ayah_text WHERE suraId=? AND ayah BETWEEN ? AND ?",
             (sid, timings[0][0], timings[-1][0])
         ).fetchall())
-    with db("surat.db") as conn:
-        surah = conn.execute("SELECT name FROM surat WHERE soraid=?", (sid,)).fetchone()
     lines = [
-        f"📖 *هاوکاتی ئایەت و دەنگ — {surah[0] if surah else sid}*",
+        f"📖 *هاوکاتی ئایەت و دەنگ — {surah[0]}*",
         "_کاتەکان لە سەرەتای فایلەکەوە بە چرکە ژمێردراون. Telegram ڕێگە نادات بۆت شوێنی پەخشکردنی دەنگ بە شێوەی ڕاستەوخۆ بزانێت؛ ئەم لیستە کاتی هەر ئایەت و دەقی ئەو ئایەتە پیشان دەدات._",
         ""
     ]
@@ -626,7 +628,7 @@ async def qari_ayah_guide(update, reciter_id, sid, page=0, edit=False):
     nav = []
     if page:
         nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"qg:{reciter_id}:{sid}:{page-1}"))
-    if len(timings) == 8:
+    if (page + 1) * 8 < int(surah[1]):
         nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"qg:{reciter_id}:{sid}:{page+1}"))
     markup = ik([nav]) if nav else None
     text = "\n".join(lines)
@@ -634,7 +636,6 @@ async def qari_ayah_guide(update, reciter_id, sid, page=0, edit=False):
         await update.callback_query.edit_message_text(text[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
     else:
         await update.effective_message.reply_text(text[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-
 
 async def play_qari_surah(update,context,index,sid):
     reciters=[r for r in load_json("dangakan") if isinstance(r,dict) and str(r.get("doxx"," ")).lower()=="true" and r.get("url")]
