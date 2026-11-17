@@ -162,9 +162,6 @@ def list_users(limit: int = 10, offset: int = 0):
 
 def get_admin_stats():
     users = get_user_count()
-    favorites = _request("GET", "bot_favorites", params={"select": "id", "limit": "1", "Prefer": "count=exact"}) or []
-    last_reads = _request("GET", "bot_last_read", params={"select": "user_id", "limit": "1", "Prefer": "count=exact"}) or []
-    banned = _request("GET", "bot_bans", params={"select": "user_id", "limit": "1", "Prefer": "count=exact"}) or []
     # PostgREST exact counts are returned in Content-Range; use lightweight row counts as a fallback.
     return {"users": users, "favorites": len(_request("GET", "bot_favorites", params={"select": "id", "limit": "10000"}) or []),
             "last_reads": len(_request("GET", "bot_last_read", params={"select": "user_id", "limit": "10000"}) or []),
