@@ -848,7 +848,18 @@ async def prayer_notification_loop(app):
                 for prayer_key, column_index, prayer_name in prayer_fields:
                     raw_time = str(row[column_index] or "").strip()
                     prayer_hm = raw_time[:5]
-                    if prayer_hm != current_hm:
+                    try:
+                        prayer_clock = datetime.strptime(prayer_hm, "%H:%M").time()
+                        prayer_at = now.replace(
+                            hour=prayer_clock.hour, minute=prayer_clock.minute,
+                            second=0, microsecond=0
+                        )
+                    except ValueError:
+                        continue
+                    # The GitHub Actions runner may restart on its hourly schedule.
+                    # A five-minute grace window prevents missing a reminder during restart.
+                    delay_seconds = (now - prayer_at).total_seconds()
+                    if delay_seconds < 0 or delay_seconds > 300:
                         continue
                     try:
                         claimed = await asyncio.to_thread(
