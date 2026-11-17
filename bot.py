@@ -1027,6 +1027,9 @@ async def firebase_video_profiles_menu(update):
         except Exception:
             log.exception("Could not send video profile card: %s", tag)
             await update.effective_message.reply_text(f"👤 {name}", reply_markup=markup)
+        # Telegram private-chat sending is rate-limited; space out the nine profile cards.
+        if profile is not profiles[-1]:
+            await asyncio.sleep(1.05)
 
 
 async def firebase_video_menu(update, profile_tag, page=0, edit=False):
