@@ -1,6 +1,6 @@
 """ڕێگای ئیسلام — Telegram edition, built from the supplied Android app data."""
 from __future__ import annotations
-import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar
+import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar, hashlib
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from datetime import datetime, date, timedelta
@@ -105,6 +105,42 @@ def download_remote_bytes(url, max_bytes, timeout):
         data = response.read(max_bytes + 1)
     if not data or len(data) > max_bytes:
         raise ValueError("Remote file is empty or exceeds the allowed size")
+    return data
+
+
+def download_cached_bytes(url, max_bytes, timeout):
+    """Reuse recently downloaded media during this bot process to avoid repeated waits."""
+    cache_dir = Path("/tmp/regay-islam-media-cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / hashlib.sha256(url.encode("utf-8")).hexdigest()
+    if cache_path.is_file():
+        try:
+            cached = cache_path.read_bytes()
+            if cached and len(cached) <= max_bytes:
+                return cached
+            cache_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    data = download_remote_bytes(url, max_bytes, timeout)
+    temp_path = cache_path.with_suffix(f".{os.getpid()}.tmp")
+    try:
+        temp_path.write_bytes(data)
+        os.replace(temp_path, cache_path)
+        # Bound cache size so repeated media requests cannot fill the runner disk.
+        files = sorted(
+            (p for p in cache_dir.iterdir() if p.is_file() and not p.name.endswith(".tmp")),
+            key=lambda p: p.stat().st_mtime
+        )
+        total = sum(p.stat().st_size for p in files)
+        for old in files:
+            if total <= 256 * 1024 * 1024:
+                break
+            if old != cache_path:
+                size = old.stat().st_size
+                old.unlink(missing_ok=True)
+                total -= size
+    except OSError:
+        temp_path.unlink(missing_ok=True)
     return data
 
 
@@ -822,17 +858,9 @@ async def send_asset_file(update, context, item):
     )
     downloaded = False
     try:
-        def download_asset():
-            request = urllib.request.Request(url, headers={"User-Agent": "Regay-Islam-Telegram-Bot/1.0"})
-            with urllib.request.urlopen(request, timeout=60) as response:
-                payload = response.read(50 * 1024 * 1024 + 1)
-            if not payload:
-                raise ValueError("The remote server returned an empty file")
-            if len(payload) > 50 * 1024 * 1024:
-                raise ValueError("The file exceeds the 50 MB Telegram bot upload limit")
-            return payload
-
-        payload = await asyncio.to_thread(download_asset)
+        payload = await asyncio.to_thread(
+            download_cached_bytes, url, 50 * 1024 * 1024, 60
+        )
         downloaded = True
         await status.edit_text("📤 فایلەکە ئامادەیە؛ ئێستا بۆ تێلێگرام دەنێردرێت...")
         stream = io.BytesIO(payload)
@@ -1018,16 +1046,9 @@ async def play_qari_surah(update,context,index,sid):
     )
     try:
         # Download the MP3 first; Telegram URL fetching can fail on GitHub release redirects.
-        def download_audio():
-            request=urllib.request.Request(audio_url,headers={"User-Agent":"Regay-Islam-Telegram-Bot/1.0"})
-            with urllib.request.urlopen(request,timeout=45) as response:
-                data=response.read(50*1024*1024+1)
-            if len(data)>50*1024*1024:
-                raise ValueError("Audio file exceeds Telegram's 50 MB bot upload limit")
-            if not data:
-                raise ValueError("Empty audio response")
-            return data
-        audio_data=await asyncio.to_thread(download_audio)
+        audio_data = await asyncio.to_thread(
+            download_cached_bytes, audio_url, 50 * 1024 * 1024, 45
+        )
         await status.edit_text("📤 دەنگەکە وەرگیرا؛ ئێستا بۆ تێلێگرام دەنێردرێت...")
         audio_file=io.BytesIO(audio_data)
         audio_file.name=f"{sid:03d}.mp3"
