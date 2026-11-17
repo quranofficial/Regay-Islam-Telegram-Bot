@@ -4,7 +4,7 @@ import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar
 from pathlib import Path
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from telegram.constants import ParseMode
 from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from supabase_store import (is_configured, save_user, get_city, set_city, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user)
@@ -302,6 +302,42 @@ async def monthly_prayer_times(update, city=None, month=None, edit=False):
         await update.callback_query.edit_message_text(message[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
     else:
         await update.effective_message.reply_text(message[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+
+
+async def request_qibla_location(update):
+    """Ask Telegram to share the user's live location for a more precise Qibla bearing."""
+    keyboard = ReplyKeyboardMarkup(
+        [[KeyboardButton("📍 ناردنی شوێنی من بۆ قیبلە", request_location=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await update.effective_message.reply_text(
+        "🧭 بۆ دۆزینەوەی ئاراستەی وردتری قیبلە، شوێنی ئێستات بنێرە. شوێنەکەت تەنها بۆ هەژمارکردنی قیبلە بەکاردێت.",
+        reply_markup=keyboard,
+    )
+
+
+async def handle_location(update, context):
+    location = update.effective_message.location
+    if not location:
+        return
+    lat, lon = math.radians(location.latitude), math.radians(location.longitude)
+    kaaba_lat, kaaba_lon = math.radians(21.4225), math.radians(39.8262)
+    dlon = kaaba_lon - lon
+    y = math.sin(dlon)
+    x = math.cos(lat) * math.tan(kaaba_lat) - math.sin(lat) * math.cos(dlon)
+    bearing = (math.degrees(math.atan2(y, x)) + 360) % 360
+    directions = ["باكوور", "ڕۆژهەڵات", "باشوور", "ڕۆژئاوا"]
+    cardinal = directions[round(bearing / 90) % 4]
+    await update.effective_message.reply_text(
+        f"🧭 *ئاراستەی قیبلە بە شوێنی ئێستات*\\n\\n"
+        f"📍 وردی شوێن: {location.horizontal_accuracy or 'نەزانراو'} مەتر\\n"
+        f"زاویەی قیبلە: *{bearing:.1f}°* لە باکووری ڕاستەقینەوە\\n"
+        f"ئاراستەی گشتی: *{cardinal}*\\n\\n"
+        "_مۆبایلەکەت بۆ ئاراستەکردنی جەستەیی پێویستی بە قطب‌نما و ڕێکخستنی دروستی هەیە._",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=ReplyKeyboardRemove(),
+    )
 
 
 async def qibla(update, city=None):
@@ -646,7 +682,7 @@ async def handle_text(update,context):
         "🕌 کاتەکانی بانگ":lambda:prayer_city_list(update),
         "🗓 کاتەکانی بانگی مانگانە":lambda:monthly_prayer_times(update),
         "🕋 ئایەتی کورسی":lambda:show_ayat_kursi(update),
-        "🧭 ئاراستەی قیبلە":lambda:qibla(update),
+        "🧭 ئاراستەی قیبلە":lambda:request_qibla_location(update),
         "📿 تەسبیح و زیکر":lambda:tasbih(update,context),
         "🤲 دوعاکان":lambda:show_dua(update,0),
         "📚 کتێب و فەرموودە":lambda:books_menu(update),
@@ -986,7 +1022,7 @@ def main():
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("menu",menu_cmd)); app.add_handler(CommandHandler("help",help_cmd))
     app.add_handler(CommandHandler("quran",quran_cmd)); app.add_handler(CommandHandler("prayer",prayer_cmd)); app.add_handler(CommandHandler("search",cmd_search)); app.add_handler(CommandHandler("admin",cmd_admin)); app.add_handler(CommandHandler("cancel",cmd_cancel))
     app.add_handler(CommandHandler("favorites",show_favorites)); app.add_handler(CommandHandler("lastread",show_last_read)); app.add_handler(CommandHandler("settings",show_settings))
-    app.add_handler(CallbackQueryHandler(callback)); app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text)); app.add_error_handler(error_handler)
+    app.add_handler(CallbackQueryHandler(callback)); app.add_handler(MessageHandler(filters.LOCATION, handle_location)); app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text)); app.add_error_handler(error_handler)
     log.info("ڕێگای ئیسلام bot starting")
     app.run_polling(allowed_updates=Update.ALL_TYPES,drop_pending_updates=False)
 
