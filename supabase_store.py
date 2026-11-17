@@ -74,6 +74,38 @@ def get_city(uid: int):
     return rows[0].get("city") if rows else None
 
 
+def get_qari(uid: int):
+    rows = _request("GET", "bot_users", params={"select": "qari_id", "user_id": f"eq.{uid}", "limit": "1"}) or []
+    return rows[0].get("qari_id") if rows else None
+
+
+def set_qari(uid: int, qari_id: str):
+    _upsert("bot_users", {"user_id": uid, "qari_id": str(qari_id)})
+
+
+def is_setup_completed(uid: int) -> bool:
+    rows = _request("GET", "bot_users", params={"select": "setup_completed", "user_id": f"eq.{uid}", "limit": "1"}) or []
+    return bool(rows[0].get("setup_completed", False)) if rows else False
+
+
+def set_setup_completed(uid: int, completed: bool = True):
+    _upsert("bot_users", {"user_id": uid, "setup_completed": bool(completed)})
+
+
+def save_feedback(uid: int, category: str, message: str):
+    _request("POST", "bot_feedback", payload={
+        "user_id": uid, "category": category or "general", "message": message
+    }, prefer="return=minimal")
+
+
+def touch_runtime_heartbeat(status: str = "running"):
+    _request("POST", "bot_runtime", params={"on_conflict": "id"}, payload={
+        "id": 1, "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+        "status": status, "run_id": os.getenv("GITHUB_RUN_ID", ""),
+        "run_attempt": os.getenv("GITHUB_RUN_ATTEMPT", "")
+    }, prefer="resolution=merge-duplicates,return=minimal")
+
+
 def get_prayer_notifications(uid: int) -> bool:
     rows = _request(
         "GET", "bot_users",
