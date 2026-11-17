@@ -410,7 +410,7 @@ def hijri_date_for(gregorian_date):
     jd = d + (153 * mm + 2) // 5 + 365 * yy + yy // 4 - yy // 100 + yy // 400 - 32045
     hy = (30 * (jd - 1948440) + 10646) // 10631
     def islamic_jd(year, month):
-        return math.ceil(29.5 * (month - 1)) + (year - 1) * 354 + (3 + 11 * year) // 30 + 1948440
+        return math.ceil(29.5 * (month - 1)) + (year - 1) * 354 + (3 + 11 * year) // 30 + 1948439
     hm = 1
     for candidate in range(1, 13):
         if islamic_jd(hy, candidate) <= jd:
@@ -1292,7 +1292,7 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         return await finish_setup(update, q.from_user.id, rid)
     if data == "st:city":
         context.user_data["settings_city_flow"] = True
-        return await prayer_city_list(update, 0, True)
+        return await setup_city_menu(update, 0, True)
     if data.startswith("st:notify:"):
         enabled = data.endswith(":on")
         set_prayer_notifications(q.from_user.id, enabled)
@@ -1344,7 +1344,8 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         set_menu_order(q.from_user.id, order)
         return await show_menu_order(update, True)
     if data == "mo:done":
-        return await q.edit_message_text("✅ ڕیزبەندی مێنیوەکەت پاشەکەوت کرا. بۆ بینینی مێنیوی نوێ /menu بنووسە.")
+        await q.edit_message_text("✅ ڕیزبەندی مێنیوەکەت پاشەکەوت کرا.")
+        return await q.message.reply_text("مێنیوی نوێت ئامادەیە:", reply_markup=main_keyboard(q.from_user.id))
     if data.startswith("qaudio:"):
         return await play_default_qari(update, context, int(data.split(":")[1]))
     if data.startswith("qg:"):
