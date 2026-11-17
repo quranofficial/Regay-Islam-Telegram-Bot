@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
@@ -667,7 +668,7 @@ async def monthly_prayer_times(update, city=None, month=None, edit=False):
 
 
 async def send_asset_file(update, context, item):
-    """Download a media asset and send it as a Telegram file, never as a URL."""
+    """Download media, show progress, then upload the actual file to Telegram."""
     url = str(item.get("link") or item.get("url") or "").strip()
     if not url.startswith(("https://", "http://")):
         await update.effective_message.reply_text("⚠️ لینکی دروستی بۆ ئەم فایلە بەردەست نییە.")
@@ -675,30 +676,58 @@ async def send_asset_file(update, context, item):
     filename = str(item.get("namefile") or url.split("?", 1)[0].rsplit("/", 1)[-1] or "file").strip()
     suffix = Path(filename).suffix.lower()
     title = str(item.get("title") or item.get("name") or filename).strip()
+    status = await update.effective_message.reply_text(
+        f"⏳ فایلەکەی «{title[:100]}» دادەبەزێت و ئامادەی ناردن دەکرێت؛ تکایە چاوەڕێ بکە..."
+    )
+    downloaded = False
     try:
         def download_asset():
             request = urllib.request.Request(url, headers={"User-Agent": "Regay-Islam-Telegram-Bot/1.0"})
             with urllib.request.urlopen(request, timeout=60) as response:
                 payload = response.read(50 * 1024 * 1024 + 1)
-            if not payload or len(payload) > 50 * 1024 * 1024:
-                raise ValueError("Empty asset or asset exceeds Telegram bot upload limit")
+            if not payload:
+                raise ValueError("The remote server returned an empty file")
+            if len(payload) > 50 * 1024 * 1024:
+                raise ValueError("The file exceeds the 50 MB Telegram bot upload limit")
             return payload
+
         payload = await asyncio.to_thread(download_asset)
+        downloaded = True
         stream = io.BytesIO(payload)
         stream.name = filename
         chat_id = update.effective_chat.id
         if suffix in (".mp3", ".m4a", ".wav", ".ogg", ".flac"):
             await context.bot.send_audio(chat_id=chat_id, audio=stream, caption=title[:1024], title=title[:64])
         elif suffix in (".mp4", ".mov", ".m4v"):
-            await context.bot.send_video(chat_id=chat_id, video=stream, caption=title[:1024])
+            await context.bot.send_video(chat_id=chat_id, video=stream, caption=title[:1024], supports_streaming=True)
         elif suffix in (".jpg", ".jpeg", ".png", ".webp"):
             await context.bot.send_photo(chat_id=chat_id, photo=stream, caption=title[:1024])
         else:
             await context.bot.send_document(chat_id=chat_id, document=stream, caption=title[:1024], filename=filename)
+        try:
+            await status.delete()
+        except Exception:
+            pass
         return True
-    except Exception:
-        log.exception("Could not download/send asset: %s", filename)
-        await update.effective_message.reply_text("⚠️ ناردنی فایلەکە سەرکەوتوو نەبوو. تکایە دواتر دووبارە هەوڵ بدە.")
+    except Exception as exc:
+        log.exception("Could not download/send asset %s from %s", filename, url)
+        if isinstance(exc, HTTPError):
+            if exc.code == 404:
+                message = "⚠️ فایل لە سێرڤەرەکەدا نەدۆزرایەوە (404). لینکی فایلەکە پێویستی بە پشکنین هەیە."
+            else:
+                message = f"⚠️ سێرڤەری فایلەکە وەڵامی نادروستی دا (HTTP {exc.code})."
+        elif isinstance(exc, URLError) or isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+            message = "⚠️ پەیوەندی بە سێرڤەری فایلەکەوە پچڕا یان کاتی چاوەڕوانی تەواو بوو. تکایە دواتر هەوڵ بدە."
+        elif isinstance(exc, ValueError):
+            message = "⚠️ فایلەکە بەتاڵە یان لە سنووری قەبارەی ڕێگەپێدراوی Telegram گەورەترە."
+        elif downloaded:
+            message = "⚠️ فایلەکە بە سەرکەوتوویی دابەزێنرا، بەڵام Telegram نەیتوانی بینێرێت. قەبارە یان جۆری فایلەکە پشکنین بکە."
+        else:
+            message = "⚠️ لە کاتی دابەزاندنی فایلەکەدا هەڵەیەک ڕوویدا. هۆکاری ورد لە لۆگی بۆتەکە تۆمار کراوە."
+        try:
+            await status.edit_text(message)
+        except Exception:
+            await update.effective_message.reply_text(message)
         return False
 
 
@@ -722,13 +751,16 @@ async def show_json_item(update,context,key,index,edit=False):
             await update.effective_message.reply_text(f"📎 {title}",reply_markup=ik(rows))
             return
         body=item.get('text') or item.get('desc') or item.get('wata') or item.get('du3a') or item.get('tag') or ""
-        extras=[]
-        for k,v in item.items():
-            if k not in {'title','name','name_ar','text','desc','wata','du3a','_id','id','sc','tag','url','link','namefile'} and v not in (None,''):
-                extras.append(f"{k}: {v}")
-        text=f"*{title}*\n\n{body}"
-        if extras: text+='\n\n'+'\n'.join(extras)
-    else: text=f"*{JSON_FILES[key][0]}*\n\n{item}"
+        translation=item.get('text2') or ""
+        text=f"*{title}*"
+        if body:
+            text += f"\n\n{body}"
+        if translation:
+            text += f"\n\n{translation}"
+        if not body and not translation:
+            text += "\n\nناوەڕۆکی ئەم بابەتە بەردەست نییە."
+    else:
+        text=f"*{JSON_FILES[key][0]}*\n\n{item}"
     nav=[]
     if index>0: nav.append(InlineKeyboardButton("⬅️ پێشوو",callback_data=f"j:{key}:{index-1}"))
     if index+1<len(data): nav.append(InlineKeyboardButton("دواتر ➡️",callback_data=f"j:{key}:{index+1}"))
@@ -737,6 +769,7 @@ async def show_json_item(update,context,key,index,edit=False):
     rows.append([InlineKeyboardButton("🔙 لیستی بابەتەکان",callback_data=f"jl:{key}:0")])
     if edit: await update.callback_query.edit_message_text(text[:3900],reply_markup=ik(rows),disable_web_page_preview=True)
     else: await update.effective_message.reply_text(text[:3900],reply_markup=ik(rows),disable_web_page_preview=True)
+
 
 async def json_list(update,key,page=0,edit=False):
     data=load_json(key); title=JSON_FILES[key][0]
@@ -877,8 +910,7 @@ async def play_default_qari(update, context, sid):
 
 async def content_menu(update):
     rows=[]
-    keys=list(JSON_FILES)
-    for i in range(0,len(keys),2):
+    # Keep these JSON datasets for Quran recitation internals, but hide the old Adhan/audio catalogs from Topics.\n    keys=[key for key in JSON_FILES if key not in {"dangakan", "dangebangbezh"}]\n    for i in range(0,len(keys),2):
         row=[InlineKeyboardButton(JSON_FILES[k][0],callback_data=f"jl:{k}:0") for k in keys[i:i+2]]
         rows.append(row)
     await update.effective_message.reply_text("📚 *هەموو بابەتە ئایینییەکان*\nبابەتێک هەڵبژێرە:",reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
