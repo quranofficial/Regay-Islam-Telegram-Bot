@@ -208,26 +208,31 @@ def get_last_read(uid: int):
     return (rows[0]["surah_id"], rows[0]["ayah_offset"]) if rows else None
 
 
-def get_tasbih(uid: int):
-    rows = _request(
-        "GET", "bot_users",
-        params={"select": "tasbih", "user_id": f"eq.{uid}", "limit": "1"},
-    ) or []
-    return (rows[0]["tasbih"],) if rows else None
+def get_tasbih(uid: int, zikr_index: int | None = None):
+    params = {"select": "count", "user_id": f"eq.{uid}"}
+    if zikr_index is not None:
+        params["zikr_index"] = f"eq.{int(zikr_index)}"
+    rows = _request("GET", "bot_tasbih_counts", params=params) or []
+    return (sum(int(row.get("count") or 0) for row in rows),)
 
 
-def change_tasbih(uid: int, change: int) -> int:
+def change_tasbih(uid: int, change: int, zikr_index: int) -> int:
     result = _request(
-        "POST", "rpc/bot_change_tasbih",
-        payload={"p_user_id": uid, "p_change": change},
+        "POST", "rpc/bot_change_tasbih_count",
+        payload={
+            "p_user_id": int(uid),
+            "p_zikr_index": int(zikr_index),
+            "p_change": int(change),
+        },
     )
     return int(result or 0)
 
 
-def reset_tasbih(uid: int):
+def reset_tasbih(uid: int, zikr_index: int):
     _request(
-        "PATCH", "bot_users", params={"user_id": f"eq.{uid}"},
-        payload={"tasbih": 0}, prefer="return=minimal",
+        "PATCH", "bot_tasbih_counts",
+        params={"user_id": f"eq.{uid}", "zikr_index": f"eq.{int(zikr_index)}"},
+        payload={"count": 0}, prefer="return=minimal",
     )
 
 
