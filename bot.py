@@ -585,7 +585,7 @@ async def show_quran_page(update, page=1, edit=False):
             await progress.edit_text("⚠️ ناردنی وێنەی پەڕەکە سەرکەوتوو نەبوو؛ تکایە دووبارە هەوڵ بدەرەوە.")
         except Exception:
             pass
-        raise
+        return None
 
 async def send_ayat_kursi_audio(update, context):
     audio_url = "https://cdn.islamic.network/quran/audio/128/ar.alafasy/262.mp3"
@@ -1062,7 +1062,7 @@ async def play_default_qari(update, context, sid):
     return await play_qari_surah(update, context, index, sid)
 
 
-async def firebase_video_profiles_menu(update):
+async def firebase_video_profiles_menu(update, context):
     profiles = await firebase_video_profiles()
     if not profiles:
         return await update.effective_message.reply_text("هیچ پرۆفایلێک لە Firebase نەدۆزرایەوە.")
@@ -1087,8 +1087,9 @@ async def firebase_video_profiles_menu(update):
 
 
 async def firebase_video_menu(update, profile_tag, page=0, edit=False):
-    videos = await firebase_videos(profile_tag)
-    profiles = await firebase_video_profiles()
+    videos, profiles = await asyncio.gather(
+        firebase_videos(profile_tag), firebase_video_profiles()
+    )
     profile = next((p for p in profiles if p["tag"] == str(profile_tag)), None)
     if not videos:
         profile_name = profile["name"] if profile else "ئەم پرۆفایلە"
@@ -1784,7 +1785,7 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             return await q.message.reply_text("📢 پەیامەکە بنووسە. بۆ هەڵوەشاندنەوە /cancel بنووسە.")
     try:
         if data == "fbprofiles":
-            return await firebase_video_profiles_menu(update)
+            return await firebase_video_profiles_menu(update, context)
         if data.startswith("fbprofile:"):
             # Profile cards are photo messages; send the filtered list as a new text message.
             return await firebase_video_menu(update, data.split(":", 1)[1], 0, False)
