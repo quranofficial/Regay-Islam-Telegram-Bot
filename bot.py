@@ -1268,7 +1268,10 @@ async def search_choose(update):
     ]))
 
 async def about(update):
-    await update.effective_message.reply_text("🕌 *ڕێگای ئیسلام — وەشانی Telegram*\n\nئەم پڕۆژەیە لەسەر سەرچاوەی ئەپی Android ـی ڕێگای ئیسلام دامەزراوە. زانیارییەکانی قورئان، خشتەی بانگ، کتێب و بابەتەکان لە داتابەیس و فایلەکانی ئەو سەرچاوەیەوە وەرگیراون.\n\nبۆ ئاگاداری و چاکسازی: پەیوەندی بە بەڕێوەبەری بۆت بکە.",parse_mode=ParseMode.MARKDOWN)
+    await update.effective_message.reply_text(
+        "🕌 ڕێگای ئیسلام — وەشانی Telegram\n\nقورئان، مووسحەف، کاتەکانی بانگ، فەرموودە، کتێب و زیکر لە یەک شوێندا.\n\nبۆ پێشنیار، ڕاپۆرتی هەڵە یان یارمەتی، پەیوەندی بە بەڕێوەبەر بکە.",
+        reply_markup=ik([[InlineKeyboardButton("👤 پەیوەندی بە بەڕێوەبەر", url="https://t.me/ismahil_312")]])
+    )
 
 async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query
