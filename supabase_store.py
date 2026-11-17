@@ -139,6 +139,25 @@ def set_city(uid: int, city: str):
     _upsert("bot_users", {"user_id": uid, "city": city})
 
 
+def get_tasbih_zikr(uid: int) -> int:
+    rows = _request("GET", "bot_users", params={"select": "tasbih_zikr", "user_id": f"eq.{uid}", "limit": "1"}) or []
+    return int(rows[0].get("tasbih_zikr", -1)) if rows else -1
+
+
+def set_tasbih_zikr(uid: int, zikr_index: int):
+    _upsert("bot_users", {"user_id": uid, "tasbih_zikr": int(zikr_index)})
+
+
+def get_menu_order(uid: int):
+    rows = _request("GET", "bot_users", params={"select": "menu_order", "user_id": f"eq.{uid}", "limit": "1"}) or []
+    value = rows[0].get("menu_order") if rows else None
+    return value if isinstance(value, list) else []
+
+
+def set_menu_order(uid: int, order: list[str]):
+    _upsert("bot_users", {"user_id": uid, "menu_order": order})
+
+
 def init_user_features():
     # Tables are provisioned once in Supabase; never create them at runtime.
     return None
