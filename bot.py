@@ -661,7 +661,10 @@ async def play_qari_surah(update,context,index,sid):
         audio_file=io.BytesIO(audio_data)
         audio_file.name=f"{sid:03d}.mp3"
         await context.bot.send_audio(chat_id=update.effective_chat.id,audio=audio_file,title=f"{surah_name} — {qari_name}"[:64],performer=qari_name[:64],caption=f"📖 سوڕەتی {surah_name}\n🎙️ قاری: {qari_name}")
-        await qari_ayah_guide(update, str(item.get("id", "")), sid, 0)
+        try:
+            await qari_ayah_guide(update, str(item.get("id", "")), sid, 0)
+        except Exception:
+            log.exception("Audio was sent but the ayah timing guide could not be rendered")
     except Exception:
         log.exception("Could not download or send recitation audio: %s",audio_url)
         await update.effective_message.reply_text("⚠️ ناردنی فایلەکە سەرکەوتوو نەبوو. تکایە دواتر دووبارە هەوڵ بدە.",reply_markup=ik([[InlineKeyboardButton("🔙 گەڕانەوە بۆ سوڕەتەکان",callback_data=f"qr:pick:{index}")]]))
@@ -1070,8 +1073,6 @@ async def handle_text(update,context):
             context.user_data.pop("admin_broadcast_waiting", None)
             return await update.effective_message.reply_text("❎ ناردنی پەیامی گشتی هەڵوەشایەوە.")
         return await admin_broadcast(update, context, text)
-    if context.user_data.get("feedback_waiting"):
-        return await receive_feedback(update, context, text)
     if context.user_data.get("feedback_waiting"):
         return await receive_feedback(update, context, text)
     if "search_mode" in context.user_data:
