@@ -1,0 +1,68 @@
+name: Regay Islam Bot Watchdog
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: regay-islam-watchdog
+  cancel-in-progress: false
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check heartbeat and restart if needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SUPABASE_URL}" || -z "${SUPABASE_SERVICE_ROLE_KEY}" ]]; then
+            echo "::error::Supabase watchdog secrets are missing."
+            exit 1
+          fi
+
+          heartbeat_json="$(curl --fail --silent --show-error \
+            "${SUPABASE_URL}/rest/v1/bot_runtime?id=eq.1&select=heartbeat_at" \
+            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}")"
+
+          heartbeat_state="$(python -c '
+          import json, sys
+          from datetime import datetime, timezone
+          rows = json.loads(sys.argv[1])
+          if not rows or not rows[0].get("heartbeat_at"):
+              print("stale")
+          else:
+              stamp = datetime.fromisoformat(rows[0]["heartbeat_at"].replace("Z", "+00:00"))
+              age = (datetime.now(timezone.utc) - stamp).total_seconds()
+              print("fresh" if age <= 180 else "stale")
+              print(f"Heartbeat age: {int(age)} seconds", file=sys.stderr)
+          ' "${heartbeat_json}")"
+
+          active_runs="$(gh run list --workflow bot.yml --status in_progress --json databaseId --jq '.[].databaseId' || true)"
+
+          if [[ "${heartbeat_state}" == "fresh" && -n "${active_runs}" ]]; then
+            echo "Bot heartbeat is fresh and a bot workflow is running."
+            exit 0
+          fi
+
+          echo "Bot heartbeat is stale or no bot workflow is active; restarting."
+          if [[ -n "${active_runs}" ]]; then
+            while IFS= read -r run_id; do
+              [[ -z "${run_id}" ]] && continue
+              gh run cancel "${run_id}" || true
+            done <<< "${active_runs}"
+          fi
+
+          sleep 5
+          gh workflow run bot.yml --ref master
+          echo "Restart dispatch submitted."
