@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from telegram.constants import ParseMode
 from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from supabase_store import (is_configured, save_user, get_city, set_city, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user)
+from supabase_store import (is_configured, save_user, get_city, set_city, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user)
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -129,10 +129,14 @@ async def show_settings(update, context=None):
     city_label = city or "دیاری نەکراوە"
     row = get_tasbih(uid)
     tasbih_count = row[0] if row else 0
+    notifications = get_prayer_notifications(uid)
+    notify_label = "🟢 چالاکە" if notifications else "🔴 ناچالاکە"
+    notify_action = "off" if notifications else "on"
     await update.effective_message.reply_text(
-        f"⚙️ *ڕێکخستنەکانی من*\n\n🏙 شاری هەڵبژێردراو: {city_label}\n📿 ژمارەی تەسبیح: {tasbih_count}\n\nدەتوانیت شاری خۆت بگۆڕیت؛ ئەو شارە بۆ کاتەکانی بانگ و قیبلە بەکاردێت.",
+        f"⚙️ *ڕێکخستنەکانی من*\n\n🏙 شاری هەڵبژێردراو: {city_label}\n📿 ژمارەی تەسبیح: {tasbih_count}\n🔔 ئاگادارکردنەوەی کاتی بانگ: {notify_label}\n\nدەتوانیت شاری خۆت بگۆڕیت؛ ئەو شارە بۆ کاتەکانی بانگ و قیبلە و ئاگادارکردنەوە بەکاردێت.",
         reply_markup=ik([
             [InlineKeyboardButton("🏙 گۆڕینی شار", callback_data="st:city")],
+            [InlineKeyboardButton(("🔕 ناچالاککردنی ئاگادارکردنەوە" if notifications else "🔔 چالاککردنی ئاگادارکردنەوە"), callback_data=f"st:notify:{notify_action}")],
             [InlineKeyboardButton("⭐ دڵخوازەکان", callback_data="fv:list")],
             [InlineKeyboardButton("📍 دوا خوێندنەوە", callback_data="lr")]
         ]), parse_mode=ParseMode.MARKDOWN)
@@ -635,6 +639,14 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         if data == "settings": return await show_settings(update)
         if data == "fv:list": return await show_favorites(update)
         if data == "st:city": return await prayer_city_list(update, mode="prayer")
+        if data == "st:notify:on":
+            set_prayer_notifications(q.from_user.id, True)
+            await q.answer("🔔 ئاگادارکردنەوەی کاتی بانگ چالاک کرا.")
+            return await show_settings(update)
+        if data == "st:notify:off":
+            set_prayer_notifications(q.from_user.id, False)
+            await q.answer("🔕 ئاگادارکردنەوەی کاتی بانگ ناچالاک کرا.")
+            return await show_settings(update)
         if data.startswith("fv:add:"):
             _, _, sid, ayah = data.split(":")
             with db("regayislam.db") as c:
@@ -793,7 +805,73 @@ async def block_banned(update, context):
 async def error_handler(update,context):
     log.exception("Unhandled bot error",exc_info=context.error)
 
+async def prayer_notification_loop(app):
+    """Send each enabled user one Telegram reminder at each daily prayer time."""
+    prayer_fields = [
+        ("fajr", 1, "بەیانی"),
+        ("dhuhr", 3, "نیوەڕۆ"),
+        ("asr", 4, "عەسر"),
+        ("maghrib", 5, "ئێوارە"),
+        ("isha", 6, "عیشا"),
+    ]
+    while True:
+        try:
+            now = datetime.now(TZ)
+            today = now.strftime("%m-%d")
+            prayer_date = now.strftime("%Y-%m-%d")
+            current_hm = now.strftime("%H:%M")
+            subscribers = await asyncio.to_thread(list_prayer_notification_users)
+            city_times = {}
+            for subscriber in subscribers:
+                uid = int(subscriber["user_id"])
+                city = subscriber.get("city")
+                if not city:
+                    continue
+                if city not in city_times:
+                    try:
+                        with db("katenwezh62.db") as conn:
+                            exists = conn.execute(
+                                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (city,)
+                            ).fetchone()
+                            if not exists:
+                                city_times[city] = {}
+                            else:
+                                row = conn.execute(
+                                    f'SELECT D,bayani,xorhalatn,niwaro,asr,eywara,esha FROM "{city}" WHERE D=?',
+                                    (today,)
+                                ).fetchone()
+                                city_times[city] = row or {}
+                    except Exception:
+                        log.exception("Could not read prayer times for city %s", city)
+                        city_times[city] = {}
+                row = city_times[city]
+                if not row:
+                    continue
+                for prayer_key, column_index, prayer_name in prayer_fields:
+                    raw_time = str(row[column_index] or "").strip()
+                    prayer_hm = raw_time[:5]
+                    if prayer_hm != current_hm:
+                        continue
+                    try:
+                        claimed = await asyncio.to_thread(
+                            claim_prayer_notification, uid, prayer_date, prayer_key
+                        )
+                        if not claimed:
+                            continue
+                        await app.bot.send_message(
+                            chat_id=uid,
+                            text=f"🕌 ئێستا کاتی بانگی *{prayer_name}* ـە.\n\nخوا نوێژ و دوعاکانتان قبوڵ بکات. 🤲",
+                            parse_mode=ParseMode.MARKDOWN,
+                        )
+                    except Exception:
+                        log.exception("Prayer notification failed for user %s (%s)", uid, prayer_key)
+        except Exception:
+            log.exception("Prayer notification worker iteration failed")
+        await asyncio.sleep(25)
+
+
 async def post_init(app):
+    app.create_task(prayer_notification_loop(app), name="prayer-notification-loop")
     await app.bot.set_my_commands([
         BotCommand("start","دەستپێکردن"), BotCommand("menu","مێنیوی سەرەکی"),
         BotCommand("search","گەڕان لە ناوەڕۆک"), BotCommand("quran","قورئان"),
