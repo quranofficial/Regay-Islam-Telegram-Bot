@@ -28,6 +28,23 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Verify required secrets are present
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ADMIN_IDS: ${{ secrets.ADMIN_IDS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python - <<'PY'
+          import os, sys
+          required = ("BOT_TOKEN", "ADMIN_IDS", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY")
+          missing = [key for key in required if not os.getenv(key)]
+          for key in required:
+              print(f"{key}: {'MISSING' if key in missing else 'OK'}")
+          if missing:
+              sys.exit("Required GitHub Actions secrets are missing; values were not printed.")
+          PY
+
       - name: Run bot with persistent logs
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
