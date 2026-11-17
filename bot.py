@@ -63,6 +63,78 @@ def load_json(key: str) -> list:
 def db(name: str):
     return sqlite3.connect(f"file:{DATA / name}?mode=ro", uri=True, timeout=10)
 
+
+FIREBASE_DATABASE_URL = os.getenv(
+    "FIREBASE_DATABASE_URL",
+    "https://regayislam-1-default-rtdb.firebaseio.com",
+).rstrip("/")
+
+
+def _firebase_decode(value):
+    if isinstance(value, str) and value.strip().startswith(("[", "{")):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    while isinstance(value, dict) and len(value) == 1:
+        value = next(iter(value.values()))
+        if isinstance(value, str) and value.strip().startswith(("[", "{")):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                break
+    return value
+
+
+def _firebase_get_sync(path):
+    from urllib.parse import quote
+    safe_path = "/".join(quote(part, safe="") for part in path.split("/") if part)
+    url = f"{FIREBASE_DATABASE_URL}/{safe_path}.json"
+    request = urllib.request.Request(
+        url, headers={"Accept": "application/json", "User-Agent": "Regay-Islam-Bot/1.0"}
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+async def firebase_get(path):
+    try:
+        return _firebase_decode(await asyncio.to_thread(_firebase_get_sync, path))
+    except Exception:
+        log.exception("Firebase read failed for path %s", path)
+        return None
+
+
+async def firebase_live_channels():
+    value = await firebase_get("Live")
+    if isinstance(value, list):
+        rows = [dict(x) for x in value if isinstance(x, dict)]
+    elif isinstance(value, dict):
+        rows = []
+        for key, item in value.items():
+            if isinstance(item, dict):
+                rows.append({"id": str(key), **item})
+    else:
+        rows = []
+    return [x for x in rows if str(x.get("url") or x.get("link") or "").strip()]
+
+
+async def firebase_videos():
+    value = await firebase_get("videoNew")
+    rows = []
+    if isinstance(value, dict):
+        for folder, items in value.items():
+            if not isinstance(items, dict):
+                continue
+            for key, item in items.items():
+                if isinstance(item, dict):
+                    row = {"id": str(key), "folder": str(folder), **item}
+                    row["url"] = row.get("url") or row.get("link") or row.get("video")
+                    if str(row.get("url") or "").startswith(("http://", "https://")):
+                        rows.append(row)
+    rows.sort(key=lambda x: int(x.get("date") or 0) if str(x.get("date") or "").isdigit() else 0, reverse=True)
+    return rows
+
 MENU_ITEMS = {
     "quran": "📖 قورئانی پیرۆز", "prayer": "🕌 کاتەکانی بانگ",
     "kursi": "🕋 ئایەتی کورسی", "mushaf": "📖 مصحەف",
@@ -72,7 +144,7 @@ MENU_ITEMS = {
     "feedback": "💬 پێشنیار و ڕەخنە", "ramadan": "🌙 ڕەمەزان",
     "names": "📿 ناوەکانی خودا",
     "reciters": "🎙️ قارییەکان", "search": "🔎 گەڕان",
-    "topics": "📚 هەموو بابەتەکان", "live": "📡 پەخشی ڕاستەوخۆ", "favorites": "⭐ دڵخوازەکان",
+    "topics": "📚 هەموو بابەتەکان", "live": "📡 پەخشی ڕاستەوخۆ", "videos": "🎞️ ڤیدیۆی ئاینی", "favorites": "⭐ دڵخوازەکان",
     "lastread": "📍 دوا خوێندنەوە", "settings": "⚙️ ڕێکخستن",
     "about": "ℹ️ دەربارەی بۆت",
 }
@@ -909,18 +981,71 @@ async def play_default_qari(update, context, sid):
 
 
 async def live_broadcast_menu(update):
-    streams = [
-        ("مەککەی پیرۆز", "https://github.com/quranofficial/Rsmakan/raw/main/makka.png",
-         "https://win.holol.com/live/quran/playlist.m3u8"),
-        ("مەدینەی پیرۆز", "https://github.com/quranofficial/Rsmakan/raw/main/madina.png",
-         "https://win.holol.com/live/sunnah/playlist.m3u8"),
-    ]
-    for name, image_url, stream_url in streams:
-        await update.effective_message.reply_photo(
-            photo=image_url,
-            caption=f"📡 پەخشی ڕاستەوخۆ — {name}",
-            reply_markup=ik([[InlineKeyboardButton(f"▶️ بینینی پەخشی {name}", url=stream_url)]]),
-        )
+    streams = await firebase_live_channels()
+    if not streams:
+        streams = [
+            {"name": "مەککەی پیرۆز", "image": "https://github.com/quranofficial/Rsmakan/raw/main/makka.png",
+             "url": "https://win.holol.com/live/quran/playlist.m3u8"},
+            {"name": "مەدینەی پیرۆز", "image": "https://github.com/quranofficial/Rsmakan/raw/main/madina.png",
+             "url": "https://win.holol.com/live/sunnah/playlist.m3u8"},
+        ]
+    for stream in streams:
+        name = str(stream.get("name") or stream.get("title") or "پەخشی ڕاستەوخۆ").strip()
+        image_url = str(stream.get("image") or "").strip()
+        stream_url = str(stream.get("url") or stream.get("link") or "").strip()
+        markup = ik([[InlineKeyboardButton(f"▶️ بینینی پەخشی {name}"[:60], url=stream_url)]])
+        try:
+            if image_url.startswith(("https://", "http://")):
+                await update.effective_message.reply_photo(
+                    photo=image_url, caption=f"📡 پەخشی ڕاستەوخۆ — {name}", reply_markup=markup
+                )
+            else:
+                await update.effective_message.reply_text(
+                    f"📡 پەخشی ڕاستەوخۆ — {name}", reply_markup=markup
+                )
+        except Exception:
+            log.exception("Could not send live stream card for %s", name)
+            await update.effective_message.reply_text(
+                f"📡 {name}", reply_markup=markup, disable_web_page_preview=True
+            )
+
+
+async def firebase_video_menu(update, page=0, edit=False):
+    videos = await firebase_videos()
+    if not videos:
+        message = "🎞️ ڤیدیۆی ئاینی لە Firebase بەردەست نییە یان پەیوەندی پچڕاوە."
+        if edit:
+            return await update.callback_query.edit_message_text(message)
+        return await update.effective_message.reply_text(message)
+    page_size = 10
+    page = max(0, min(int(page), (len(videos)-1)//page_size))
+    rows = []
+    for index, item in enumerate(videos[page*page_size:(page+1)*page_size], start=page*page_size):
+        title = str(item.get("name") or item.get("title") or f"ڤیدیۆی {index+1}").strip()
+        rows.append([InlineKeyboardButton(f"🎬 {title}"[:58], callback_data=f"fbv:{index}")])
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"fbvp:{page-1}"))
+    if (page+1)*page_size < len(videos):
+        nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"fbvp:{page+1}"))
+    if nav:
+        rows.append(nav)
+    message = f"🎞️ *ڤیدیۆی ئاینی*
+{len(videos)} ڤیدیۆ لە Firebase — لاپەڕە {page+1}"
+    if edit:
+        await update.callback_query.edit_message_text(message, reply_markup=ik(rows), parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.effective_message.reply_text(message, reply_markup=ik(rows), parse_mode=ParseMode.MARKDOWN)
+
+
+async def send_firebase_video(update, context, index):
+    videos = await firebase_videos()
+    if not 0 <= index < len(videos):
+        return await update.effective_message.reply_text("ڤیدیۆکە لە Firebase نەدۆزرایەوە.")
+    item = videos[index]
+    item["title"] = str(item.get("name") or item.get("title") or f"ڤیدیۆی {index+1}")
+    item["namefile"] = str(item.get("namefile") or item["url"].split("?", 1)[0].rsplit("/", 1)[-1])
+    await send_asset_file(update, context, item)
 
 
 async def content_menu(update):
@@ -1442,6 +1567,7 @@ async def handle_text(update,context):
         "🎙️ قارییەکان":lambda:show_qari_menu(update,0),
         "📚 هەموو بابەتەکان":lambda:content_menu(update),
         "📡 پەخشی ڕاستەوخۆ":lambda:live_broadcast_menu(update),
+        "🎞️ ڤیدیۆی ئاینی":lambda:firebase_video_menu(update,0),
         "🔎 گەڕان":lambda:search_choose(update),
         "⭐ دڵخوازەکان":lambda:show_favorites(update),
         "📍 دوا خوێندنەوە":lambda:show_last_read(update),
@@ -1577,6 +1703,10 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             context.user_data["admin_broadcast_waiting"] = True
             return await q.message.reply_text("📢 پەیامەکە بنووسە. بۆ هەڵوەشاندنەوە /cancel بنووسە.")
     try:
+        if data.startswith("fbvp:"):
+            return await firebase_video_menu(update, int(data.split(":")[1]), True)
+        if data.startswith("fbv:"):
+            return await send_firebase_video(update, context, int(data.split(":")[1]))
         if data.startswith("qr:list:"): return await show_qari_menu(update,int(data.split(":")[2]),True)
         if data.startswith("qr:pick:"): return await show_qari_surahs(update,int(data.split(":")[2]))
         if data.startswith("qr:play:"):
