@@ -1130,7 +1130,8 @@ async def receive_feedback(update, context, message):
             try:
                 await context.bot.send_message(
                     chat_id=admin_id,
-                    text=f"💬 Feedback\n👤 {user.full_name} (@{user.username or '—'})\n🆔 {uid}\n📂 {category}\n\n{message[:3500]}"
+                    text=f"💬 پێشنیار و ڕەخنە\n👤 {user.full_name} (@{user.username or '—'})\n🆔 {uid}\n📂 {category}\n\n{message[:3300]}",
+                    reply_markup=ik([[InlineKeyboardButton("↩️ وەڵامدانەوە", callback_data=f"fb:reply:{uid}")]])
                 )
             except Exception:
                 log.exception("Could not notify admin about feedback from %s", uid)
@@ -1253,6 +1254,14 @@ async def handle_text(update,context):
             context.user_data.pop("admin_broadcast_waiting", None)
             return await update.effective_message.reply_text("❎ ناردنی پەیامی گشتی هەڵوەشایەوە.")
         return await admin_broadcast(update, context, text)
+    if context.user_data.get("feedback_reply_to") and update.effective_user.id in ADMIN_IDS:
+        target = int(context.user_data.pop("feedback_reply_to"))
+        try:
+            await context.bot.send_message(chat_id=target, text=f"💬 وەڵامی بەڕێوەبەر:\\n\\n{text[:4000]}")
+            return await update.effective_message.reply_text(f"✅ وەڵامەکەت بۆ بەکارهێنەری {target} نێردرا.")
+        except Exception:
+            log.exception("Could not send admin feedback reply to %s", target)
+            return await update.effective_message.reply_text("⚠️ ناردنی وەڵامەکە سەرکەوتوو نەبوو.")
     if context.user_data.get("feedback_waiting"):
         return await receive_feedback(update, context, text)
     if "search_mode" in context.user_data:
@@ -1284,6 +1293,17 @@ async def handle_text(update,context):
     fn=mapping.get(text)
     if fn: await fn()
     else: await update.effective_message.reply_text("تکایە لە مێنیوەکە هەڵبژێرە یان /start بنووسە.",reply_markup=main_keyboard(update.effective_user.id))
+
+async def hadith_menu(update):
+    await update.effective_message.reply_text(
+        "📜 *فەرموودەکان*\\n\\nبەشێک هەڵبژێرە:",
+        reply_markup=ik([
+            [InlineKeyboardButton("٤٠٠ فەرموودە", callback_data="hd:400")],
+            [InlineKeyboardButton("پوختەی سەحیحی موسلیم", callback_data="hd:muslim")]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
 
 async def search_choose(update):
     await update.effective_message.reply_text("🔎 جۆری گەڕان هەڵبژێرە:",reply_markup=ik([
@@ -1334,6 +1354,12 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         context.user_data["feedback_category"] = category
         context.user_data["feedback_waiting"] = True
         return await q.message.reply_text("✍️ تکایە پێشنیار یان ڕەخنەکەت بە ڕوونی بنووسە. بۆ هەڵوەشاندنەوە /cancel بنووسە.")
+    if data.startswith("fb:reply:"):
+        if q.from_user.id not in ADMIN_IDS:
+            return await q.answer("⛔ دەسەڵاتت نییە.", show_alert=True)
+        target = int(data.split(":")[2])
+        context.user_data["feedback_reply_to"] = target
+        return await q.message.reply_text(f"✍️ وەڵامەکەت بۆ بەکارهێنەری {target} بنووسە. /cancel بۆ هەڵوەشاندنەوە.")
     if data.startswith("pb:list:"):
         return await pdf_books_menu(update, int(data.split(":")[2]), True)
     if data.startswith("pb:item:"):
@@ -1345,11 +1371,10 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
     if data == "kursi:audio":
         return await send_ayat_kursi_audio(update, context)
     if data.startswith("tz:list:"):
-        return await tasbih_picker(update, int(data.split(":")[2]), True)
+        return await tasbih_picker(update, 0, True)
     if data.startswith("tz:pick:"):
         index = int(data.split(":")[2])
-        items = load_json("zikrakan")
-        if not 0 <= index < len(items):
+        if not 0 <= index < len(TASBIH_PHRASES):
             return await q.answer("زیکرەکە نەدۆزرایەوە.", show_alert=True)
         set_tasbih_zikr(q.from_user.id, index)
         reset_tasbih(q.from_user.id)
@@ -1441,6 +1466,9 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             city=data[3:]; set_city(q.from_user.id,city); return await monthly_prayer_times(update,city,edit=True)
         if data.startswith("pm:"):
             return await monthly_prayer_times(update,get_city(q.from_user.id),data[3:],edit=True)
+        if data.startswith("hd:"):
+            if data == "hd:400": return await json_list(update,"farmwda",0,True)
+            if data == "hd:muslim": return await books_menu(update,0,True)
         if data.startswith("j:"):
             _,key,index=data.split(":"); return await show_json_item(update,context,key,int(index),True)
         if data.startswith("jl:"):
@@ -1679,10 +1707,17 @@ async def post_init(app):
         BotCommand("start","دەستپێکردن"), BotCommand("menu","مێنیوی سەرەکی"),
         BotCommand("search","گەڕان لە ناوەڕۆک"), BotCommand("quran","قورئان"),
         BotCommand("prayer","کاتەکانی بانگ"), BotCommand("favorites","دڵخوازەکان"),
-        BotCommand("lastread","دوا خوێندنەوە"), BotCommand("settings","ڕێکخستن"), BotCommand("help","یارمەتی")
+        BotCommand("lastread","دوا خوێندنەوە"), BotCommand("settings","ڕێکخستن"), BotCommand("hide","شاردنەوەی مێنیو"), BotCommand("help","یارمەتی")
     ])
 
-async def menu_cmd(update,context): await start(update,context)
+async def menu_cmd(update,context):
+    user = update.effective_user
+    save_user(user.id, user.first_name or "", user.username or "")
+    await update.effective_message.reply_text("مێنیوی سەرەکی ئامادەیە.", reply_markup=main_keyboard(user.id))
+
+
+async def hide_menu_cmd(update,context):
+    await update.effective_message.reply_text("مێنیو شاردراوە. بۆ پیشاندانی دووبارە /menu بنووسە.", reply_markup=ReplyKeyboardRemove())
 async def quran_cmd(update,context): await show_suras(update)
 async def prayer_cmd(update,context):
     city=get_city(update.effective_user.id)
@@ -1700,7 +1735,7 @@ def main():
     app=Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(MessageHandler(filters.ALL, block_banned), group=-1)
     app.add_handler(CallbackQueryHandler(block_banned), group=-1)
-    app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("menu",menu_cmd)); app.add_handler(CommandHandler("help",help_cmd))
+    app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("menu",menu_cmd)); app.add_handler(CommandHandler("hide",hide_menu_cmd)); app.add_handler(CommandHandler("help",help_cmd))
     app.add_handler(CommandHandler("quran",quran_cmd)); app.add_handler(CommandHandler("prayer",prayer_cmd)); app.add_handler(CommandHandler("search",cmd_search)); app.add_handler(CommandHandler("admin",cmd_admin)); app.add_handler(CommandHandler("cancel",cmd_cancel))
     app.add_handler(CommandHandler("favorites",show_favorites)); app.add_handler(CommandHandler("lastread",show_last_read)); app.add_handler(CommandHandler("settings",show_settings))
     app.add_handler(CallbackQueryHandler(callback)); app.add_handler(MessageHandler(filters.LOCATION, handle_location)); app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text)); app.add_error_handler(error_handler)
