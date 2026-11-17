@@ -585,6 +585,52 @@ async def show_qari_surahs(update,index):
     title=str(item.get("name_ar") or "قاری").strip()
     await update.callback_query.edit_message_text(f"🎙️ *{title}*\n\nسوڕەتێک هەڵبژێرە بۆ گوێگرتن:",reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
 
+async def qari_ayah_guide(update, reciter_id, sid, page=0, edit=False):
+    timing_path = DATA / "recitation_timings" / f"{reciter_id}.db"
+    if not timing_path.is_file():
+        text = "⚠️ داتای کاتی ئایەت بۆ ئەم قارییە بەردەست نییە."
+        if edit:
+            return await update.callback_query.edit_message_text(text)
+        return await update.effective_message.reply_text(text)
+    with sqlite3.connect(f"file:{timing_path}?mode=ro", uri=True) as conn:
+        timings = conn.execute(
+            "SELECT ayah,time FROM timings WHERE sura=? ORDER BY ayah LIMIT 8 OFFSET ?",
+            (sid, page * 8)
+        ).fetchall()
+    if not timings:
+        text = "کاتی ئایەت بۆ ئەم سوڕەتە نەدۆزرایەوە."
+        if edit:
+            return await update.callback_query.edit_message_text(text)
+        return await update.effective_message.reply_text(text)
+    with db("regayislam.db") as conn:
+        verses = dict(conn.execute(
+            "SELECT ayah,text FROM ayah_text WHERE suraId=? AND ayah BETWEEN ? AND ?",
+            (sid, timings[0][0], timings[-1][0])
+        ).fetchall())
+    with db("surat.db") as conn:
+        surah = conn.execute("SELECT name FROM surat WHERE soraid=?", (sid,)).fetchone()
+    lines = [
+        f"📖 *هاوکاتی ئایەت و دەنگ — {surah[0] if surah else sid}*",
+        "_کاتەکان لە سەرەتای فایلەکەوە بە چرکە ژمێردراون. Telegram ڕێگە نادات بۆت شوێنی پەخشکردنی دەنگ بە شێوەی ڕاستەوخۆ بزانێت؛ ئەم لیستە کاتی هەر ئایەت و دەقی ئەو ئایەتە پیشان دەدات._",
+        ""
+    ]
+    for ayah, milliseconds in timings:
+        seconds = max(0, int(milliseconds)) // 1000
+        stamp = f"{seconds // 60:02d}:{seconds % 60:02d}"
+        lines.append(f"*{stamp}* — ﴿{ayah}﴾ {verses.get(ayah, '')}")
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"qg:{reciter_id}:{sid}:{page-1}"))
+    if len(timings) == 8:
+        nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"qg:{reciter_id}:{sid}:{page+1}"))
+    markup = ik([nav]) if nav else None
+    text = "\n".join(lines)
+    if edit:
+        await update.callback_query.edit_message_text(text[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.effective_message.reply_text(text[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+
+
 async def play_qari_surah(update,context,index,sid):
     reciters=[r for r in load_json("dangakan") if isinstance(r,dict) and str(r.get("doxx"," ")).lower()=="true" and r.get("url")]
     if index<0 or index>=len(reciters) or not 1<=sid<=114: return await update.callback_query.answer("زانیاریی دەنگ نەدۆزرایەوە",show_alert=True)
@@ -610,6 +656,7 @@ async def play_qari_surah(update,context,index,sid):
         audio_file=io.BytesIO(audio_data)
         audio_file.name=f"{sid:03d}.mp3"
         await context.bot.send_audio(chat_id=update.effective_chat.id,audio=audio_file,title=f"{surah_name} — {qari_name}"[:64],performer=qari_name[:64],caption=f"📖 سوڕەتی {surah_name}\n🎙️ قاری: {qari_name}")
+        await qari_ayah_guide(update, str(item.get("id", "")), sid, 0)
     except Exception:
         log.exception("Could not download or send recitation audio: %s",audio_url)
         await update.effective_message.reply_text("⚠️ ناردنی فایلەکە سەرکەوتوو نەبوو. تکایە دواتر دووبارە هەوڵ بدە.",reply_markup=ik([[InlineKeyboardButton("🔙 گەڕانەوە بۆ سوڕەتەکان",callback_data=f"qr:pick:{index}")]]))
@@ -1006,6 +1053,8 @@ async def handle_text(update,context):
         return await admin_broadcast(update, context, text)
     if context.user_data.get("feedback_waiting"):
         return await receive_feedback(update, context, text)
+    if context.user_data.get("feedback_waiting"):
+        return await receive_feedback(update, context, text)
     if "search_mode" in context.user_data:
         return await do_search(update,context,text)
     mapping={
@@ -1050,6 +1099,38 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query
     await q.answer()
     data=q.data or ""
+    if data.startswith("setup:citypage:"):
+        return await setup_city_menu(update, int(data.split(":")[2]), True)
+    if data.startswith("setup:qpage:"):
+        return await setup_qari_menu(update, int(data.split(":")[2]), True)
+    if data.startswith("setup:city:"):
+        city = data.split(":", 2)[2]
+        set_city(q.from_user.id, city)
+        return await setup_qari_menu(update)
+    if data.startswith("setup:reciter:"):
+        rid = data.split(":")[2]
+        return await finish_setup(update, q.from_user.id, rid)
+    if data == "st:qari:menu":
+        return await setup_qari_menu(update, 0, True, True)
+    if data.startswith("st:qpage:"):
+        return await setup_qari_menu(update, int(data.split(":")[2]), True, True)
+    if data.startswith("st:qari:"):
+        rid = data.split(":")[2]
+        set_qari(q.from_user.id, rid)
+        return await q.edit_message_text("✅ قاریی دڵخوازت پاشەکەوت کرا.")
+    if data.startswith("fb:cat:"):
+        category = data.split(":")[2]
+        context.user_data["feedback_category"] = category
+        context.user_data["feedback_waiting"] = True
+        return await q.message.reply_text("✍️ تکایە پێشنیار یان ڕەخنەکەت بە ڕوونی بنووسە. بۆ هەڵوەشاندنەوە /cancel بنووسە.")
+    if data.startswith("pb:list:"):
+        return await pdf_books_menu(update, int(data.split(":")[2]), True)
+    if data.startswith("pb:item:"):
+        _, _, index, page = data.split(":")
+        return await pdf_book_item(update, int(index), int(page))
+    if data.startswith("qg:"):
+        _, rid, sid, page = data.split(":")
+        return await qari_ayah_guide(update, rid, int(sid), int(page), True)
     if data.startswith("ad:"):
         if q.from_user.id not in ADMIN_IDS:
             return await q.answer("⛔ دەسەڵاتت نییە.", show_alert=True)
@@ -1202,6 +1283,9 @@ async def admin_stats(update, edit=False):
 
 
 async def cmd_cancel(update, context):
+    if context.user_data.pop("feedback_waiting", None):
+        context.user_data.pop("feedback_category", None)
+        return await update.effective_message.reply_text("❎ ناردنی پەیام هەڵوەشایەوە.")
     if context.user_data.pop("admin_broadcast_waiting", None):
         return await update.effective_message.reply_text("❎ ناردنی پەیامی گشتی هەڵوەشایەوە.")
     await update.effective_message.reply_text("هیچ کردارێکی چاوەڕوانکراو نییە.")
