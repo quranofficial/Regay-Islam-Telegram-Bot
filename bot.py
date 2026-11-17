@@ -572,30 +572,119 @@ async def show_dua(update,index=0):
     if index<55: nav.append(InlineKeyboardButton("➡️",callback_data=f"du:{index+1}"))
     await update.effective_message.reply_text(text,reply_markup=ik([nav] if nav else []),parse_mode=ParseMode.MARKDOWN)
 
-async def books_menu(update):
-    with db("mu.db") as c: rows=c.execute("SELECT i,title,tag FROM sarki ORDER BY i").fetchall()
-    buttons=[[InlineKeyboardButton(f"{title} ({tag})",callback_data=f"bc:{tag}:0")] for i,title,tag in rows]
-    await update.effective_message.reply_text("📚 *کتێب و فەرموودە*\nبەشێک هەڵبژێرە:",reply_markup=ik(buttons),parse_mode=ParseMode.MARKDOWN)
+async def books_menu(update, page=0, edit=False):
+    """Browse the original Android book library, grouped by its 69 source categories."""
+    with db("mu.db") as conn:
+        rows = conn.execute(
+            "SELECT s.i,trim(s.title),s.tag,count(b._id) "
+            "FROM sarki s LEFT JOIN babat b ON b.bash=s.tag "
+            "GROUP BY s.i,s.title,s.tag ORDER BY s.i"
+        ).fetchall()
+    total_pages = max(1, (len(rows) + 11) // 12)
+    page = max(0, min(page, total_pages - 1))
+    chunk = rows[page * 12:(page + 1) * 12]
+    buttons = [
+        [InlineKeyboardButton(f"📖 {title} — {count} بابەت"[:60], callback_data=f"bc:{tag}:0")]
+        for _, title, tag, count in chunk
+    ]
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"bm:{page-1}"))
+    if page + 1 < total_pages:
+        nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"bm:{page+1}"))
+    if nav:
+        buttons.append(nav)
+    text = (
+        "📚 *کتێبخانەی ڕێگای ئیسلام*\\n"
+        f"بەشەکان: {len(rows)} — پەڕە {page+1}/{total_pages}\\n"
+        "بەشێک هەڵبژێرە بۆ بینینی کتێب و فەرموودەکانی."
+    )
+    if edit:
+        await update.callback_query.edit_message_text(text, reply_markup=ik(buttons), parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.effective_message.reply_text(text, reply_markup=ik(buttons), parse_mode=ParseMode.MARKDOWN)
 
-async def book_list(update,tag,page=0):
-    with db("mu.db") as c:
-        # Tag values are read from the bundled DB, but still validate against the whitelist.
-        tags={r[0] for r in c.execute("SELECT tag FROM sarki")}
-        if tag not in tags: return await update.callback_query.answer("بەش نەدۆزرایەوە",show_alert=True)
-        rows=c.execute("SELECT _id,sarder FROM babat WHERE dlxwaz=? ORDER BY _id LIMIT 12 OFFSET ?",(tag,page*12)).fetchall()
-        total=c.execute("SELECT count(*) FROM babat WHERE dlxwaz=?",(tag,)).fetchone()[0]
-    buttons=[[InlineKeyboardButton(str(title)[:58],callback_data=f"bi:{bid}")] for bid,title in rows]
-    nav=[]
-    if page: nav.append(InlineKeyboardButton("⬅️",callback_data=f"bc:{tag}:{page-1}"))
-    if (page+1)*12<total: nav.append(InlineKeyboardButton("➡️",callback_data=f"bc:{tag}:{page+1}"))
-    if nav: buttons.append(nav)
-    buttons.append([InlineKeyboardButton("🔙 بەشەکان",callback_data="bm")])
-    await update.callback_query.edit_message_text(f"📚 *{tag}* — {total} بابەت",reply_markup=ik(buttons),parse_mode=ParseMode.MARKDOWN)
 
-async def book_item(update,bid):
-    with db("mu.db") as c: r=c.execute("SELECT sarder,drezha FROM babat WHERE _id=?",(bid,)).fetchone()
-    if not r: return await update.callback_query.answer("بابەت نەدۆزرایەوە",show_alert=True)
-    await update.effective_message.reply_text(f"📚 {r[0]}\n\n{r[1][:3700]}",disable_web_page_preview=True)
+async def book_list(update, tag, page=0):
+    with db("mu.db") as conn:
+        category = conn.execute(
+            "SELECT trim(title) FROM sarki WHERE tag=?", (tag,)
+        ).fetchone()
+        if not category:
+            return await update.callback_query.answer("بەش نەدۆزرایەوە", show_alert=True)
+        title = category[0]
+        # In the source database, babat.bash is the category key.
+        # babat.dlxwaz is NULL for all 2,009 records.
+        rows = conn.execute(
+            "SELECT _id,sarder FROM babat WHERE bash=? ORDER BY _id LIMIT 12 OFFSET ?",
+            (tag, page * 12),
+        ).fetchall()
+        total = conn.execute(
+            "SELECT count(*) FROM babat WHERE bash=?", (tag,)
+        ).fetchone()[0]
+    buttons = [
+        [InlineKeyboardButton(str(label).strip()[:58], callback_data=f"bi:{bid}:{page}:0")]
+        for bid, label in rows
+    ]
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"bc:{tag}:{page-1}"))
+    if (page + 1) * 12 < total:
+        nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"bc:{tag}:{page+1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ کتێبخانە", callback_data="bm:0")])
+    await update.callback_query.edit_message_text(
+        f"📚 *{title}*\\n{total} بابەت — پەڕەی {page+1}",
+        reply_markup=ik(buttons), parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def book_item(update, bid, list_page=0, part=0):
+    with db("mu.db") as conn:
+        row = conn.execute(
+            "SELECT sarder,drezha,bash FROM babat WHERE _id=?", (bid,)
+        ).fetchone()
+        if not row:
+            return await update.callback_query.answer("بابەت نەدۆزرایەوە", show_alert=True)
+        title, body, tag = row
+        category = conn.execute(
+            "SELECT trim(title) FROM sarki WHERE tag=?", (tag,)
+        ).fetchone()
+        category_title = category[0] if category else "کتێبخانە"
+        siblings = conn.execute(
+            "SELECT _id FROM babat WHERE bash=? ORDER BY _id", (tag,)
+        ).fetchall()
+    sibling_ids = [int(x[0]) for x in siblings]
+    try:
+        position = sibling_ids.index(int(bid))
+    except ValueError:
+        position = 0
+    body = str(body or "")
+    chunks = cut(body, 3000) or ["ناوەڕۆکی ئەم بابەتە بەردەست نییە."]
+    part = max(0, min(int(part), len(chunks) - 1))
+    text = (
+        f"📚 {category_title}\\n"
+        f"*{str(title).strip()}*\\n"
+        f"بابەت {position+1}/{len(sibling_ids)}"
+        + (f" — بەشی دەق {part+1}/{len(chunks)}" if len(chunks) > 1 else "")
+        + "\\n\\n" + chunks[part]
+    )
+    nav = []
+    if part > 0:
+        nav.append(InlineKeyboardButton("⬅️ بەشی پێشوو", callback_data=f"bi:{bid}:{list_page}:{part-1}"))
+    if part + 1 < len(chunks):
+        nav.append(InlineKeyboardButton("بەشی داهاتوو ➡️", callback_data=f"bi:{bid}:{list_page}:{part+1}"))
+    buttons = [nav] if nav else []
+    if position > 0:
+        buttons.append([InlineKeyboardButton("⬅️ بابەتی پێشوو", callback_data=f"bi:{sibling_ids[position-1]}:{list_page}:0")])
+    if position + 1 < len(sibling_ids):
+        buttons.append([InlineKeyboardButton("بابەتی داهاتوو ➡️", callback_data=f"bi:{sibling_ids[position+1]}:{list_page}:0")])
+    buttons.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ لیستی بابەتەکان", callback_data=f"bc:{tag}:{list_page}")])
+    await update.callback_query.edit_message_text(
+        text[:3900], reply_markup=ik(buttons), disable_web_page_preview=True,
+    )
+
 
 async def repentance_menu(update):
     with db("garanawa.db") as c: rows=c.execute("SELECT _id,title,tableName FROM babatakan ORDER BY _id").fetchall()
@@ -834,10 +923,13 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             _,key,page=data.split(":"); return await json_list(update,key,int(page),True)
         if data.startswith("nm:"): return await show_names(update,int(data.split(":")[1]))
         if data.startswith("du:"): return await show_dua(update,int(data.split(":")[1]))
-        if data=="bm": return await books_menu(update)
+        if data == "bm": return await books_menu(update)
+        if data.startswith("bm:"): return await books_menu(update,int(data.split(":")[1]),True)
         if data.startswith("bc:"):
             _,tag,page=data.split(":"); return await book_list(update,tag,int(page))
-        if data.startswith("bi:"): return await book_item(update,int(data.split(":")[1]))
+        if data.startswith("bi:"):
+            bits=data.split(":")
+            return await book_item(update,int(bits[1]),int(bits[2]) if len(bits)>2 else 0,int(bits[3]) if len(bits)>3 else 0)
         if data == "ts:reset":
             reset_tasbih(q.from_user.id)
             return await tasbih(update,context,0)
