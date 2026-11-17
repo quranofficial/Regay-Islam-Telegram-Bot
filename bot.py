@@ -4,7 +4,7 @@ import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar
 from pathlib import Path
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, BotCommand
 from telegram.constants import ParseMode
 from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from supabase_store import (is_configured, save_user, get_city, set_city, get_qari, set_qari, is_setup_completed, set_setup_completed, save_feedback, touch_runtime_heartbeat, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user, get_tasbih_zikr, set_tasbih_zikr, get_menu_order, set_menu_order)
@@ -84,7 +84,7 @@ def main_keyboard(uid=None):
     keys = valid + [key for key in DEFAULT_MENU_ORDER if key not in valid]
     buttons = [KeyboardButton(MENU_ITEMS[key]) for key in keys]
     rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
-    rows.append([KeyboardButton("🙈 مێنیو بشارەوە")])
+    rows.append([KeyboardButton("🙈 شاردنەوەی مێنیو")])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=False)
 
 def ik(rows):
@@ -109,16 +109,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(user.id, user.first_name or "", user.username or "")
     if not is_setup_completed(user.id):
         await update.effective_message.reply_text(
-            "🕌 بەخێربێیت بۆ ڕێگای ئیسلام\n\n"
-            "تەنها یەک جار ڕێکخستنی سەرەتایی ئەنجام بدە: شارەکەت و قاریی دڵخوازت هەڵبژێرە. "
-            "زانیارییەکانت پاشەکەوت دەکرێن و دواتر لە ⚙️ ڕێکخستن دەتوانیت بیگۆڕیت."
+            "🕌 بەخێربێیت بۆ بۆتی ڕێگای ئیسلام\n\n"
+            "📖 قورئانی پیرۆز و مصحەف\n🕌 کاتەکانی بانگ\n📜 فەرموودە و زانیاریی ئایینی\n🤲 دوعا و زیکر\n\n"
+            "⚙️ بۆ دەستپێکردن، تکایە شارەکەت و قاریی دڵخوازت هەڵبژێرە.\n"
+            "🔒 ئەم هەڵبژاردنانە پاشەکەوت دەکرێن و هەر کاتێک دەتوانیت بیانگۆڕیت."
         )
         return await setup_city_menu(update, 0)
     text = ("🕌 *بەخێربێیتەوە بۆ ڕێگای ئیسلام*\n\n"
-            "ڕێکخستنە سەرەتاییەکانت پاشەکەوت کراون.\n"
-            "📖 قورئان و مووسحەف\n🕌 کاتەکانی بانگ\n🎙️ قارییەکان\n"
-            "📚 کتێب و فەرموودە\n🌙 ڕەمەزان\n📿 تەسبیح و زیکر\n\n"
-            "هەڵبژاردنێک لە مێنیوەکە بکە.")
+            "✨ هەموو ئەوەی پێویستتە بۆ خوێندنەوە و فێربوونی ئایینی لێرە کۆکراوەتەوە.\n\n"
+            "📖 قورئان و مصحەف\n🕌 کاتەکانی بانگ\n📜 فەرموودەکان\n"
+            "🤲 دوعا و زیکر\n🎙️ قارییەکان\n📚 کتێبخانە و بابەتەکان\n\n"
+            "👇 تکایە بەشێک لە مێنیوی خوارەوە هەڵبژێرە.")
     await update.effective_message.reply_text(text, reply_markup=main_keyboard(update.effective_user.id), parse_mode=ParseMode.MARKDOWN)
 
 
@@ -272,33 +273,30 @@ async def show_suras(update, page=0, edit=False):
     else: await update.effective_message.reply_text(text,reply_markup=markup,parse_mode=ParseMode.MARKDOWN)
 
 async def show_quran_page(update, page=1, edit=False):
-    """Render a Mushaf-style page using the exact page/verse map bundled with the Android app."""
+    """Show the requested Mushaf page from the supplied page-image collection."""
     page = max(1, min(604, int(page)))
+    image_url = (
+        "https://raw.githubusercontent.com/H4zh4n/TafseeriNoor/"
+        "82a7765441154b14174a9181ad338b0949815d29/images/"
+        f"page{page:03d}.png"
+    )
+    caption = f"📖 مصحەفی قورئانی پیرۆز — پەڕەی {page}/604"
+
+    # Keep the page-to-ayah map for last-read tracking and the reciter shortcut.
     with db("regayislam.db") as conn:
         info_path = DATA / "recitation_timings" / "ayah_info.db"
         conn.execute("ATTACH DATABASE ? AS info", (f"file:{info_path}?mode=ro",))
         rows = conn.execute(
             """
-            SELECT p.surah_id,p.verse_id,a.sura_name_ar,a.text,MIN(p.line_number) AS line_no
+            SELECT p.surah_id,p.verse_id
             FROM info.page_data_line p
-            JOIN ayah_text a ON a.suraId=p.surah_id AND a.ayah=p.verse_id
             WHERE p.page_number=?
-            GROUP BY p.surah_id,p.verse_id,a.sura_name_ar,a.text
-            ORDER BY line_no,p.surah_id,p.verse_id
+            ORDER BY p.line_number,p.surah_id,p.verse_id
+            LIMIT 1
             """,
             (page,),
-        ).fetchall()
-    if not rows:
-        return await update.effective_message.reply_text("ئەم پەڕەیە لە داتای مصحەفدا نەدۆزرایەوە.")
-    save_last_read(update.effective_user.id, rows[0][0], max(0, int(rows[0][1]) - 1))
-    parts = [f"📖 *مصحەفی قورئانی پیرۆز — پەڕەی {page}/604*\n"]
-    last_surah = None
-    for sid, ayah, surah_name, arabic, line_no in rows:
-        if sid != last_surah:
-            parts.append(f"\n*{surah_name}*")
-            last_surah = sid
-        parts.append(f"﴿{ayah}﴾ {arabic}")
-    text = "\n".join(parts)
+        ).fetchone()
+
     buttons = []
     nav = []
     if page > 1:
@@ -307,14 +305,25 @@ async def show_quran_page(update, page=1, edit=False):
         nav.append(InlineKeyboardButton("پەڕەی داهاتوو ➡️", callback_data=f"qp:{page+1}"))
     if nav:
         buttons.append(nav)
-    buttons.append([InlineKeyboardButton("🎧 گوێگرتن بە قاریی هەڵبژێردراو", callback_data=f"qaudio:{rows[0][0]}")])
+    if rows:
+        save_last_read(update.effective_user.id, rows[0], max(0, int(rows[1]) - 1))
+        buttons.append([InlineKeyboardButton("🎧 گوێگرتن بە قاریی هەڵبژێردراو", callback_data=f"qaudio:{rows[0]}")])
     buttons.append([InlineKeyboardButton("📖 لیستی سوڕەتەکان", callback_data="q:s:0")])
     markup = ik(buttons)
-    if edit:
-        await update.callback_query.edit_message_text(text[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-    else:
-        await update.effective_message.reply_text(text[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
 
+    if edit:
+        # Telegram cannot turn a text message into a photo by editing its media.
+        sent = await update.effective_message.reply_photo(
+            photo=image_url, caption=caption, reply_markup=markup
+        )
+        try:
+            await update.effective_message.delete()
+        except Exception:
+            log.warning("Could not remove previous Mushaf navigation message")
+        return sent
+    return await update.effective_message.reply_photo(
+        photo=image_url, caption=caption, reply_markup=markup
+    )
 
 async def send_ayat_kursi_audio(update, context):
     audio_url = "https://cdn.islamic.network/quran/audio/128/ar.alafasy/262.mp3"
@@ -561,9 +570,9 @@ async def show_json_item(update,context,key,index,edit=False):
         for k,v in item.items():
             if k not in {'title','name','name_ar','text','desc','wata','du3a','_id','id','sc','tag','url','link','namefile'} and v not in (None,''):
                 extras.append(f"{k}: {v}")
-        text=f"*{title}*\\n\\n{body}"
-        if extras: text+='\\n\\n'+'\\n'.join(extras)
-    else: text=f"*{JSON_FILES[key][0]}*\\n\\n{item}"
+        text=f"*{title}*\n\n{body}"
+        if extras: text+='\n\n'+'\n'.join(extras)
+    else: text=f"*{JSON_FILES[key][0]}*\n\n{item}"
     nav=[]
     if index>0: nav.append(InlineKeyboardButton("⬅️ پێشوو",callback_data=f"j:{key}:{index-1}"))
     if index+1<len(data): nav.append(InlineKeyboardButton("دواتر ➡️",callback_data=f"j:{key}:{index+1}"))
@@ -802,8 +811,8 @@ async def books_menu(update, page=0, edit=False):
     if nav:
         buttons.append(nav)
     text = (
-        "📜 *پوختەی سەحیحی موسلیم*\\n"
-        f"بەشەکان: {len(rows)} — پەڕە {page+1}/{total_pages}\\n"
+        "📜 *پوختەی سەحیحی موسلیم*\n"
+        f"بەشەکان: {len(rows)} — پەڕە {page+1}/{total_pages}\n"
         "بەشێک هەڵبژێرە بۆ بینینی فەرموودەکان بە بەش بەش."
     )
     if edit:
@@ -842,7 +851,7 @@ async def book_list(update, tag, page=0):
         buttons.append(nav)
     buttons.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ کتێبخانە", callback_data="bm:0")])
     await update.callback_query.edit_message_text(
-        f"📚 *{title}*\\n{total} بابەت — پەڕەی {page+1}",
+        f"📚 *{title}*\n{total} بابەت — پەڕەی {page+1}",
         reply_markup=ik(buttons), parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -871,11 +880,11 @@ async def book_item(update, bid, list_page=0, part=0):
     chunks = cut(body, 3000) or ["ناوەڕۆکی ئەم بابەتە بەردەست نییە."]
     part = max(0, min(int(part), len(chunks) - 1))
     text = (
-        f"📚 {category_title}\\n"
-        f"*{str(title).strip()}*\\n"
+        f"📚 {category_title}\n"
+        f"*{str(title).strip()}*\n"
         f"بابەت {position+1}/{len(sibling_ids)}"
         + (f" — بەشی دەق {part+1}/{len(chunks)}" if len(chunks) > 1 else "")
-        + "\\n\\n" + chunks[part]
+        + "\n\n" + chunks[part]
     )
     nav = []
     if part > 0:
@@ -1212,7 +1221,7 @@ async def handle_text(update,context):
     if context.user_data.get("feedback_reply_to") and update.effective_user.id in ADMIN_IDS:
         target = int(context.user_data.pop("feedback_reply_to"))
         try:
-            await context.bot.send_message(chat_id=target, text=f"💬 وەڵامی بەڕێوەبەر:\\n\\n{text[:4000]}")
+            await context.bot.send_message(chat_id=target, text=f"💬 وەڵامی بەڕێوەبەر:\n\n{text[:4000]}")
             return await update.effective_message.reply_text(f"✅ وەڵامەکەت بۆ بەکارهێنەری {target} نێردرا.")
         except Exception:
             log.exception("Could not send admin feedback reply to %s", target)
@@ -1252,7 +1261,7 @@ async def handle_text(update,context):
 
 async def hadith_menu(update):
     await update.effective_message.reply_text(
-        "📜 *فەرموودەکان*\\n\\nبەشێک هەڵبژێرە:",
+        "📜 *فەرموودەکان*\n\nبەشێک هەڵبژێرە:",
         reply_markup=ik([
             [InlineKeyboardButton("٤٠٠ فەرموودە", callback_data="hd:400")],
             [InlineKeyboardButton("پوختەی سەحیحی موسلیم", callback_data="hd:muslim")]
@@ -1738,11 +1747,11 @@ async def post_init(app):
 async def menu_cmd(update,context):
     user = update.effective_user
     save_user(user.id, user.first_name or "", user.username or "")
-    await update.effective_message.reply_text("مێنیوی سەرەکی ئامادەیە.", reply_markup=main_keyboard(user.id))
+    await update.effective_message.reply_text("📚 *مێنیوی سەرەکی*\n\n👇 بەشی دڵخوازت هەڵبژێرە بۆ دەستپێکردن.", reply_markup=main_keyboard(user.id), parse_mode=ParseMode.MARKDOWN)
 
 
 async def hide_menu_cmd(update,context):
-    await update.effective_message.reply_text("مێنیو شاردراوە. بۆ پیشاندانی دووبارە /menu بنووسە.", reply_markup=ReplyKeyboardRemove())
+    await update.effective_message.reply_text("🙈 مێنیوی سەرەکی شاردراوەتەوە.\n\n📌 بۆ پیشاندانی دووبارە، /menu بنووسە.", reply_markup=ReplyKeyboardRemove())
 async def quran_cmd(update,context): await show_suras(update)
 async def prayer_cmd(update,context):
     city=get_city(update.effective_user.id)
