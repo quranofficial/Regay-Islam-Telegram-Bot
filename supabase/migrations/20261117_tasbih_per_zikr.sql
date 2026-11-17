@@ -19,8 +19,8 @@ create or replace function public.bot_change_tasbih_count(
 )
 returns bigint
 language plpgsql
-security definer
-set search_path = public
+security invoker
+set search_path = pg_catalog, public
 as $$
 declare
     v_count bigint;
