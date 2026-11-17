@@ -789,10 +789,30 @@ async def names_menu(update, page=0, edit=False):
     else: await update.effective_message.reply_text(text, reply_markup=ik(buttons))
 
 
+def eastern_digits(value):
+    return str(value).translate(str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩"))
+
+
 async def show_names(update,index=0):
-    with db("name.db") as c: r=c.execute("SELECT arabic,surah_ayah,sorani,badini,english,farsi FROM name ORDER BY _id LIMIT 1 OFFSET ?",(index,)).fetchone()
+    with db("name.db") as c:
+        r=c.execute("SELECT arabic,surah_ayah,sorani,badini,english,farsi FROM name ORDER BY _id LIMIT 1 OFFSET ?",(index,)).fetchone()
     if not r: return
-    text=f" *ناوەکانی خودا — {index+1}/100*\n\n*{r[0]}*\n📖 شوێنی ئاماژە: {r[1]}\n\n🇹🇯 واتا بە سۆرانی:\n{r[2]}\n\nواتا بە بادینی:\n{r[3]}\n\nEnglish: {r[4]}\nفارسی: {r[5]}"
+    import re
+    ref = str(r[1] or "").strip()
+    match = re.search(r"(\d+)\s*[:：/]\s*(\d+)", ref)
+    reference_line = f"📖 شوێنی ئایەت: {ref}"
+    ayah_text = ""
+    if match:
+        sid, ayah = int(match.group(1)), int(match.group(2))
+        with db("regayislam.db") as qdb:
+            verse = qdb.execute("SELECT sura_name_ar,text FROM ayah_text WHERE suraId=? AND ayah=?", (sid, ayah)).fetchone()
+        if verse:
+            reference_line = f"📖 سوڕەتی {verse[0]}، ئایەتی {eastern_digits(ayah)}"
+            ayah_text = str(verse[1] or "")
+    text=f"📿 *ناوەکانی خودا — {index+1}/100*\n\n*{r[0]}*\n{reference_line}"
+    if ayah_text:
+        text += f"\n\n{ayah_text}"
+    text += f"\n\n🇹🇯 واتا بە سۆرانی:\n{r[2]}\n\nواتا بە بادینی:\n{r[3]}\n\nEnglish: {r[4]}\nفارسی: {r[5]}"
     rows=[]
     nav=[]
     if index: nav.append(InlineKeyboardButton("⬅️ ناوی پێشوو",callback_data=f"nm:{index-1}"))
@@ -800,6 +820,7 @@ async def show_names(update,index=0):
     if nav: rows.append(nav)
     rows.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ هەموو ناوەکان",callback_data=f"nml:{index//10}")])
     await update.effective_message.reply_text(text,reply_markup=ik(rows))
+
 
 async def show_dua(update,index=0):
     with db("duha.db") as c: r=c.execute("SELECT du3a,wata FROM du3a ORDER BY id LIMIT 1 OFFSET ?",(index,)).fetchone()
@@ -1045,19 +1066,22 @@ async def quiz_answer(update,context,sid):
 async def prayer_reminder_info(update):
     await update.effective_message.reply_text("🔔 *ئاگادارکردنەوەی بانگ*\n\nکاتەکانی بانگ لەم وەشانەدا لە خشتەی داتابەیسی ئەپەکەت پیشان دەدرێن. ئاگادارکردنەوەی ئۆتۆماتیکی لە Telegram پێویستی بە بەردەوام کارکردنی سێرڤەر و ڕێکخستنی job queue هەیە؛ لەم وەشانەدا وەک تایبەتمەندیی چالاک دانەنراوە.")
 
+TASBIH_PHRASES = [
+    "سُبْحَانَ اللهِ", "الْحَمْدُ لِلَّهِ", "اللهُ أَكْبَرُ",
+    "لَا إِلَهَ إِلَّا اللهُ", "لَا حَوْلَ وَلَا قُوَّةَ إِلَّا بِاللهِ",
+    "أَسْتَغْفِرُ اللهَ", "سُبْحَانَ اللهِ وَبِحَمْدِهِ",
+    "سُبْحَانَ اللهِ الْعَظِيمِ", "اللَّهُمَّ صَلِّ وَسَلِّمْ عَلَى مُحَمَّدٍ",
+    "لَا إِلَهَ إِلَّا أَنْتَ سُبْحَانَكَ إِنِّي كُنْتُ مِنَ الظَّالِمِينَ",
+    "حَسْبِيَ اللهُ وَنِعْمَ الْوَكِيلُ", "اللَّهُمَّ اغْفِرْ لِي",
+    "رَبِّ اغْفِرْ لِي وَتُبْ عَلَيَّ إِنَّكَ أَنْتَ التَّوَّابُ الرَّحِيمُ",
+    "سُبْحَانَ اللهِ وَالْحَمْدُ لِلَّهِ وَلَا إِلَهَ إِلَّا اللهُ وَاللهُ أَكْبَرُ",
+]
+
+
 async def tasbih_picker(update, page=0, edit=False):
-    items = load_json("zikrakan")
-    page_size = 8
-    page = max(0, min(int(page), max(0, (len(items)-1)//page_size)))
-    rows = []
-    for index, item in enumerate(items[page*page_size:(page+1)*page_size], start=page*page_size):
-        if isinstance(item, dict):
-            rows.append([InlineKeyboardButton(str(item.get("title") or f"زیکر {index+1}")[:58], callback_data=f"tz:pick:{index}")])
-    nav = []
-    if page: nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"tz:list:{page-1}"))
-    if (page+1)*page_size < len(items): nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"tz:list:{page+1}"))
-    if nav: rows.append(nav)
-    text = f"📿 زیکرێک هەڵبژێرە — {len(items)} زیکر"
+    rows = [[InlineKeyboardButton(f"{i+1}. {phrase}"[:58], callback_data=f"tz:pick:{i}")]
+            for i, phrase in enumerate(TASBIH_PHRASES)]
+    text = "📿 تەسبیح\n\nیەکێک لە ١٤ زیکرەکە هەڵبژێرە:"
     if edit: await update.callback_query.edit_message_text(text, reply_markup=ik(rows))
     else: await update.effective_message.reply_text(text, reply_markup=ik(rows))
 
@@ -1065,17 +1089,14 @@ async def tasbih_picker(update, page=0, edit=False):
 async def tasbih(update, context, change=0, edit=False):
     uid = update.effective_user.id
     zikr_index = get_tasbih_zikr(uid)
-    items = load_json("zikrakan")
-    if zikr_index < 0 or zikr_index >= len(items):
+    if zikr_index < 0 or zikr_index >= len(TASBIH_PHRASES):
         return await tasbih_picker(update, 0, edit)
     count = change_tasbih(uid, change) if change else (get_tasbih(uid) or (0,))[0]
-    item = items[zikr_index] if isinstance(items[zikr_index], dict) else {}
-    title = str(item.get("title") or "زیکری هەڵبژێردراو")
-    description = str(item.get("text") or "")[:900]
-    text = f"📿 تەسبیحی ئەلیکترۆنی\n\n{title}\n\n{description}\n\nژمارەی زیکر: {count}"
+    phrase = TASBIH_PHRASES[zikr_index]
+    text = f"📿 تەسبیح\n\n{phrase}\n\nژمارە: {count}"
     rows = [
         [InlineKeyboardButton("➕ ١ زیاد بکە", callback_data="ts:+"), InlineKeyboardButton("🔄 سفر", callback_data="ts:reset")],
-        [InlineKeyboardButton("🔁 گۆڕینی زیکر", callback_data="tz:list:0")]
+        [InlineKeyboardButton("🔁 هەڵبژاردنی زیکری تر", callback_data="tz:list:0")]
     ]
     if edit: await update.callback_query.edit_message_text(text, reply_markup=ik(rows))
     else: await update.effective_message.reply_text(text, reply_markup=ik(rows))
