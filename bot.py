@@ -1108,23 +1108,6 @@ async def ramadan_item(update, table, rid):
         ])
     )
 
-async def quiz_start(update,context):
-    with db("surat.db") as c: rows=c.execute("SELECT soraid,name,aya FROM surat ORDER BY soraid").fetchall()
-    import random
-    target=random.choice(rows); choices=[target]+random.sample([r for r in rows if r[0]!=target[0]],3); random.shuffle(choices)
-    context.user_data["quiz_answer"]=target[0]
-    buttons=[[InlineKeyboardButton(r[1],callback_data=f"qa:{r[0]}")] for r in choices]
-    await update.effective_message.reply_text(f"🧠 *تاقیکردنەوەی ئیسلامی*\n\nئەم سوڕەتە {target[2]} ئایەتی هەیە؟ ناوی سوڕەتەکە هەڵبژێرە:",reply_markup=ik(buttons),parse_mode=ParseMode.MARKDOWN)
-
-async def quiz_answer(update,context,sid):
-    correct=context.user_data.pop("quiz_answer",None)
-    if correct is None: return await update.callback_query.answer("تاقیکردنەوەکە کۆتایی هاتووە",show_alert=True)
-    if sid==correct: msg="✅ ڕاستە! وەڵامەکەت دروستە."
-    else:
-        with db("surat.db") as c: name=c.execute("SELECT name FROM surat WHERE soraid=?",(correct,)).fetchone()[0]
-        msg=f"❌ وەڵامەکەت هەڵەیە. وەڵامی ڕاست: {name}"
-    await update.effective_message.reply_text(msg,reply_markup=ik([[InlineKeyboardButton("🔁 تاقیکردنەوەیەکی تر",callback_data="qz:new")]]))
-
 async def prayer_reminder_info(update):
     await update.effective_message.reply_text("🔔 *ئاگادارکردنەوەی بانگ*\n\nکاتەکانی بانگ لەم وەشانەدا لە خشتەی داتابەیسی ئەپەکەت پیشان دەدرێن. ئاگادارکردنەوەی ئۆتۆماتیکی لە Telegram پێویستی بە بەردەوام کارکردنی سێرڤەر و ڕێکخستنی job queue هەیە؛ لەم وەشانەدا وەک تایبەتمەندیی چالاک دانەنراوە.")
 
@@ -1649,8 +1632,6 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             _,table,page=data.split(":"); return await ramadan_list(update,table,int(page))
         if data.startswith("ri:"):
             _,table,rid=data.split(":"); return await ramadan_item(update,table,int(rid))
-        if data=="qz:new": return await quiz_start(update,context)
-        if data.startswith("qa:"): return await quiz_answer(update,context,int(data.split(":")[1]))
         if data.startswith("sm:"):
             context.user_data["search_mode"]=data.split(":")[1]
             return await q.message.reply_text("🔎 وشە یان دەستەواژەکە بنووسە:")
