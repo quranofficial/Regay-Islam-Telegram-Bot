@@ -6,8 +6,8 @@ from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from supabase_store import (is_configured, save_user, get_city, set_city, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, get_user_count)
+from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from supabase_store import (is_configured, save_user, get_city, set_city, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user)
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -562,6 +562,11 @@ async def do_search(update,context,query):
 
 async def handle_text(update,context):
     text=(update.effective_message.text or "").strip()
+    if context.user_data.get("admin_broadcast_waiting") and update.effective_user.id in ADMIN_IDS:
+        if text == "/cancel":
+            context.user_data.pop("admin_broadcast_waiting", None)
+            return await update.effective_message.reply_text("❎ ناردنی پەیامی گشتی هەڵوەشایەوە.")
+        return await admin_broadcast(update, context, text)
     if "search_mode" in context.user_data:
         return await do_search(update,context,text)
     mapping={
@@ -601,6 +606,25 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query
     await q.answer()
     data=q.data or ""
+    if data.startswith("ad:"):
+        if q.from_user.id not in ADMIN_IDS:
+            return await q.answer("⛔ دەسەڵاتت نییە.", show_alert=True)
+        bits = data.split(":")
+        if data == "ad:home":
+            return await q.edit_message_text("🛠 بەشی بەڕێوەبەر", reply_markup=admin_keyboard())
+        if data == "ad:stats":
+            return await admin_stats(update, True)
+        if len(bits) == 3 and bits[1] == "users":
+            return await admin_users(update, int(bits[2]), True)
+        if len(bits) == 3 and bits[1] == "ban":
+            uid = int(bits[2]); ban_user(uid, "لە لایەن بەڕێوەبەرەوە")
+            return await q.edit_message_text(f"⛔ بەکارهێنەری {uid} بەند کرا.", reply_markup=ik([[InlineKeyboardButton("🔙 لیست", callback_data="ad:users:0")]]))
+        if len(bits) == 3 and bits[1] == "unban":
+            uid = int(bits[2]); unban_user(uid)
+            return await q.edit_message_text(f"🔓 بەندی بەکارهێنەری {uid} لابرا.", reply_markup=ik([[InlineKeyboardButton("🔙 لیست", callback_data="ad:users:0")]]))
+        if data == "ad:broadcast":
+            context.user_data["admin_broadcast_waiting"] = True
+            return await q.message.reply_text("📢 پەیامەکە بنووسە. بۆ هەڵوەشاندنەوە /cancel بنووسە.")
     try:
         if data.startswith("qr:list:"): return await show_qari_menu(update,int(data.split(":")[2]),True)
         if data.startswith("qr:pick:"): return await show_qari_surahs(update,int(data.split(":")[2]))
@@ -673,10 +697,91 @@ async def cmd_search(update,context):
     if len(context.args)>1: return await do_search(update,context," ".join(context.args[1:]))
     await update.effective_message.reply_text("وشەکەت بنووسە بۆ گەڕان:")
 
+def admin_keyboard():
+    return ik([
+        [InlineKeyboardButton("👥 بەکارهێنەران", callback_data="ad:users:0"),
+         InlineKeyboardButton("📊 ئامار", callback_data="ad:stats")],
+        [InlineKeyboardButton("📢 ناردنی پەیامی گشتی", callback_data="ad:broadcast")]
+    ])
+
+
+async def admin_users(update, page=0, edit=False):
+    rows = list_users(10, page * 10)
+    buttons = []
+    lines = ["👥 لیستی بەکارهێنەران"]
+    for row in rows:
+        uid = int(row["user_id"])
+        name = (row.get("name") or "بێ ناو").replace("\n", " ")[:30]
+        username = ("@" + row["username"]) if row.get("username") else "بێ یوزەرنەیم"
+        lines.append(f"\n• {name} — {username}\nID: {uid}")
+        action = "unban" if is_banned(uid) else "ban"
+        label = "🔓 لابردنی بەند" if action == "unban" else "⛔ بەندکردن"
+        buttons.append([InlineKeyboardButton(f"{label}: {uid}", callback_data=f"ad:{action}:{uid}")])
+    nav = []
+    if page > 0: nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"ad:users:{page-1}"))
+    if len(rows) == 10: nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"ad:users:{page+1}"))
+    if nav: buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔙 گەڕانەوە", callback_data="ad:home")])
+    text = "\n".join(lines) if rows else "👥 هیچ بەکارهێنەرێک لەم لاپەڕەیەدا نییە."
+    if edit: await update.callback_query.edit_message_text(text, reply_markup=ik(buttons))
+    else: await update.effective_message.reply_text(text, reply_markup=ik(buttons))
+
+
+async def admin_stats(update, edit=False):
+    stats = get_admin_stats()
+    text = ("📊 ئاماری بۆت\n\n"
+            f"👥 بەکارهێنەران: {stats['users']}\n"
+            f"⭐ دڵخوازەکان: {stats['favorites']}\n"
+            f"📍 تۆماری دوا خوێندنەوە: {stats['last_reads']}\n"
+            f"⛔ بەندکراوەکان: {stats['banned']}\n"
+            "📖 ئایەت: 6236\n📚 فەرموودە: 400")
+    markup = ik([[InlineKeyboardButton("🔙 گەڕانەوە", callback_data="ad:home")]])
+    if edit: await update.callback_query.edit_message_text(text, reply_markup=markup)
+    else: await update.effective_message.reply_text(text, reply_markup=markup)
+
+
 async def cmd_admin(update,context):
-    if update.effective_user.id not in ADMIN_IDS: return
-    count=get_user_count()
-    await update.effective_message.reply_text(f"🛠 بەشی بەڕێوەبەر\n\n👥 ژمارەی بەکارهێنەران: {count}\n📖 ئایەت: 6236\n📚 فەرموودە: 400")
+    if update.effective_user.id not in ADMIN_IDS:
+        return await update.effective_message.reply_text("⛔ دەسەڵاتی بەڕێوەبەریت نییە.")
+    args = context.args
+    if args and args[0] == "ban" and len(args) > 1:
+        uid = int(args[1]); ban_user(uid, "لە لایەن بەڕێوەبەرەوە")
+        return await update.effective_message.reply_text(f"⛔ بەکارهێنەری {uid} بەند کرا.")
+    if args and args[0] == "unban" and len(args) > 1:
+        uid = int(args[1]); unban_user(uid)
+        return await update.effective_message.reply_text(f"🔓 بەندی بەکارهێنەری {uid} لابرا.")
+    if args and args[0] == "broadcast":
+        context.user_data["admin_broadcast_waiting"] = True
+        return await update.effective_message.reply_text("📢 تکایە پەیامەکە بنووسە. بۆ هەڵوەشاندنەوە /cancel بنووسە.")
+    await update.effective_message.reply_text(
+        f"🛠 بەشی بەڕێوەبەر\n\n👥 ژمارەی بەکارهێنەران: {get_user_count()}\n📖 ئایەت: 6236\n📚 فەرموودە: 400",
+        reply_markup=admin_keyboard())
+
+
+async def admin_broadcast(update, context, message):
+    context.user_data.pop("admin_broadcast_waiting", None)
+    users = list_users(10000, 0)
+    sent = failed = 0
+    for row in users:
+        uid = int(row["user_id"])
+        if is_banned(uid): continue
+        try:
+            await context.bot.send_message(chat_id=uid, text=message)
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.04)
+    await update.effective_message.reply_text(f"📢 تەواو بوو.\n✅ گەیشتە: {sent}\n⚠️ نەگەیشتە: {failed}")
+
+
+async def block_banned(update, context):
+    user = update.effective_user
+    if user and is_banned(user.id):
+        if update.callback_query:
+            await update.callback_query.answer("⛔ دەستگەیشتنت بە بۆت سنووردار کراوە.", show_alert=True)
+        elif update.effective_message:
+            await update.effective_message.reply_text("⛔ دەستگەیشتنت بە بۆت سنووردار کراوە.")
+        raise ApplicationHandlerStop
 
 
 async def error_handler(update,context):
@@ -706,6 +811,8 @@ def main():
     if not is_configured():
         raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables are required.")
     app=Application.builder().token(TOKEN).post_init(post_init).build()
+    app.add_handler(MessageHandler(filters.ALL, block_banned), group=-1)
+    app.add_handler(CallbackQueryHandler(block_banned), group=-1)
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("menu",menu_cmd)); app.add_handler(CommandHandler("help",help_cmd))
     app.add_handler(CommandHandler("quran",quran_cmd)); app.add_handler(CommandHandler("prayer",prayer_cmd)); app.add_handler(CommandHandler("search",cmd_search)); app.add_handler(CommandHandler("admin",cmd_admin))
     app.add_handler(CommandHandler("favorites",show_favorites)); app.add_handler(CommandHandler("lastread",show_last_read)); app.add_handler(CommandHandler("settings",show_settings))
