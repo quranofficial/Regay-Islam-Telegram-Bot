@@ -1030,8 +1030,7 @@ async def firebase_video_menu(update, page=0, edit=False):
         nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"fbvp:{page+1}"))
     if nav:
         rows.append(nav)
-    message = f"🎞️ *ڤیدیۆی ئاینی*
-{len(videos)} ڤیدیۆ لە Firebase — لاپەڕە {page+1}"
+    message = f"🎞️ *ڤیدیۆی ئاینی*\n{len(videos)} ڤیدیۆ لە Firebase — لاپەڕە {page+1}"
     if edit:
         await update.callback_query.edit_message_text(message, reply_markup=ik(rows), parse_mode=ParseMode.MARKDOWN)
     else:
