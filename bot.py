@@ -41,7 +41,7 @@ JSON_FILES = {
     "xaybat": ("تاوانی غەیبەت", "xaybat.json"),
     "gggg": ("چل فەرموودە دەربارەی ئافرەتان", "gggg.json"),
     "girlss": ("پرسیار و وەڵامی ئافرەتان", "girlss.json"),
-    "zianakanygorani": ("ژیان و گۆرانی", "zianakanygorani.json"),
+    "zianakanygorani": ("زیانەکانی گۆرانی", "zianakanygorani.json"),
     "hajw": ("حەج و عومرە", "hajw.json"),
     "taybat": ("ڕوقیەی شەرعی", "taybat.json"),
     "dangakan": ("دەنگی بانگ و قارییەکان", "dangakan.json"),
@@ -72,7 +72,7 @@ MENU_ITEMS = {
     "feedback": "💬 پێشنیار و ڕەخنە", "ramadan": "🌙 ڕەمەزان",
     "names": "📿 ناوەکانی خودا",
     "reciters": "🎙️ قارییەکان", "search": "🔎 گەڕان",
-    "topics": "📚 هەموو بابەتەکان", "favorites": "⭐ دڵخوازەکان",
+    "topics": "📚 هەموو بابەتەکان", "live": "📡 پەخشی ڕاستەوخۆ", "favorites": "⭐ دڵخوازەکان",
     "lastread": "📍 دوا خوێندنەوە", "settings": "⚙️ ڕێکخستن",
     "about": "ℹ️ دەربارەی بۆت",
 }
@@ -908,9 +908,26 @@ async def play_default_qari(update, context, sid):
     return await play_qari_surah(update, context, index, sid)
 
 
+async def live_broadcast_menu(update):
+    streams = [
+        ("مەککەی پیرۆز", "https://github.com/quranofficial/Rsmakan/raw/main/makka.png",
+         "https://win.holol.com/live/quran/playlist.m3u8"),
+        ("مەدینەی پیرۆز", "https://github.com/quranofficial/Rsmakan/raw/main/madina.png",
+         "https://win.holol.com/live/sunnah/playlist.m3u8"),
+    ]
+    for name, image_url, stream_url in streams:
+        await update.effective_message.reply_photo(
+            photo=image_url,
+            caption=f"📡 پەخشی ڕاستەوخۆ — {name}",
+            reply_markup=ik([[InlineKeyboardButton(f"▶️ بینینی پەخشی {name}", url=stream_url)]]),
+        )
+
+
 async def content_menu(update):
     rows=[]
-    # Keep these JSON datasets for Quran recitation internals, but hide the old Adhan/audio catalogs from Topics.\n    keys=[key for key in JSON_FILES if key not in {"dangakan", "dangebangbezh"}]\n    for i in range(0,len(keys),2):
+    # Keep reciter data available internally; hide both old audio topics only from this list.
+    keys=[key for key in JSON_FILES if key not in {"dangakan", "dangebangbezh"}]
+    for i in range(0,len(keys),2):
         row=[InlineKeyboardButton(JSON_FILES[k][0],callback_data=f"jl:{k}:0") for k in keys[i:i+2]]
         rows.append(row)
     await update.effective_message.reply_text("📚 *هەموو بابەتە ئایینییەکان*\nبابەتێک هەڵبژێرە:",reply_markup=ik(rows),parse_mode=ParseMode.MARKDOWN)
@@ -1424,6 +1441,7 @@ async def handle_text(update,context):
         "📿 ناوەکانی خودا":lambda:names_menu(update,0),
         "🎙️ قارییەکان":lambda:show_qari_menu(update,0),
         "📚 هەموو بابەتەکان":lambda:content_menu(update),
+        "📡 پەخشی ڕاستەوخۆ":lambda:live_broadcast_menu(update),
         "🔎 گەڕان":lambda:search_choose(update),
         "⭐ دڵخوازەکان":lambda:show_favorites(update),
         "📍 دوا خوێندنەوە":lambda:show_last_read(update),
