@@ -186,7 +186,7 @@ async def show_quran_page(update, page=1, edit=False):
         ).fetchall()
     if not rows:
         return await update.effective_message.reply_text("ئەم پەڕەیە لە داتای مصحەفدا نەدۆزرایەوە.")
-    save_last_read(update.effective_user.id, rows[0][0], 0)
+    save_last_read(update.effective_user.id, rows[0][0], max(0, int(rows[0][1]) - 1))
     parts = [f"📖 *مصحەفی قورئانی پیرۆز — پەڕەی {page}/604*\n"]
     last_surah = None
     for sid, ayah, surah_name, arabic, line_no in rows:
