@@ -273,6 +273,7 @@ async def show_quran_page(update, page=1, edit=False):
         nav.append(InlineKeyboardButton("پەڕەی داهاتوو ➡️", callback_data=f"qp:{page+1}"))
     if nav:
         buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🎧 گوێگرتن بە قاریی هەڵبژێردراو", callback_data=f"qaudio:{rows[0][0]}")])
     buttons.append([InlineKeyboardButton("📖 لیستی سوڕەتەکان", callback_data="q:s:0")])
     markup = ik(buttons)
     if edit:
@@ -318,6 +319,7 @@ async def show_ayahs(update, sid, offset=0, edit=False):
     with db("surat.db") as c: total=c.execute("SELECT aya FROM surat WHERE soraid=?",(sid,)).fetchone()[0]
     if offset+8<total: nav.append(InlineKeyboardButton("دواتر ➡️",callback_data=f"q:a:{sid}:{offset+8}"))
     if nav: buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🎧 گوێگرتن بە قاریی هەڵبژێردراو", callback_data=f"qaudio:{sid}")])
     buttons.append([InlineKeyboardButton("🔙 لیستی سوڕەتەکان",callback_data="q:s:0")])
     text="\n\n".join(parts)
     if edit: await update.callback_query.edit_message_text(text,reply_markup=ik(buttons),parse_mode=ParseMode.MARKDOWN)
@@ -663,6 +665,20 @@ async def play_qari_surah(update,context,index,sid):
     except Exception:
         log.exception("Could not download or send recitation audio: %s",audio_url)
         await update.effective_message.reply_text("⚠️ ناردنی فایلەکە سەرکەوتوو نەبوو. تکایە دواتر دووبارە هەوڵ بدە.",reply_markup=ik([[InlineKeyboardButton("🔙 گەڕانەوە بۆ سوڕەتەکان",callback_data=f"qr:pick:{index}")]]))
+
+async def play_default_qari(update, context, sid):
+    selected_id = get_qari(update.effective_user.id)
+    reciters = [r for r in load_json("dangakan")
+                if isinstance(r, dict) and str(r.get("doxx", "")).lower() == "true" and r.get("url")]
+    index = next((i for i, item in enumerate(reciters)
+                  if str(item.get("id")) == str(selected_id)), None)
+    if index is None:
+        await update.effective_message.reply_text(
+            "🎙️ سەرەتا قاریی دڵخوازت هەڵبژێرە:",
+        )
+        return await setup_qari_menu(update)
+    return await play_qari_surah(update, context, index, sid)
+
 
 async def content_menu(update):
     rows=[]
@@ -1131,6 +1147,8 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("pb:item:"):
         _, _, index, page = data.split(":")
         return await pdf_book_item(update, int(index), int(page))
+    if data.startswith("qaudio:"):
+        return await play_default_qari(update, context, int(data.split(":")[1]))
     if data.startswith("qg:"):
         _, rid, sid, page = data.split(":")
         return await qari_ayah_guide(update, rid, int(sid), int(page), True)
