@@ -330,10 +330,10 @@ async def handle_location(update, context):
     directions = ["باكوور", "ڕۆژهەڵات", "باشوور", "ڕۆژئاوا"]
     cardinal = directions[round(bearing / 90) % 4]
     await update.effective_message.reply_text(
-        f"🧭 *ئاراستەی قیبلە بە شوێنی ئێستات*\\n\\n"
-        f"📍 وردی شوێن: {location.horizontal_accuracy or 'نەزانراو'} مەتر\\n"
-        f"زاویەی قیبلە: *{bearing:.1f}°* لە باکووری ڕاستەقینەوە\\n"
-        f"ئاراستەی گشتی: *{cardinal}*\\n\\n"
+        f"🧭 *ئاراستەی قیبلە بە شوێنی ئێستات*\n\n"
+        f"📍 وردی شوێن: {location.horizontal_accuracy or 'نەزانراو'} مەتر\n"
+        f"زاویەی قیبلە: *{bearing:.1f}°* لە باکووری ڕاستەقینەوە\n"
+        f"ئاراستەی گشتی: *{cardinal}*\n\n"
         "_مۆبایلەکەت بۆ ئاراستەکردنی جەستەیی پێویستی بە قطب‌نما و ڕێکخستنی دروستی هەیە._",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=ReplyKeyboardRemove(),
