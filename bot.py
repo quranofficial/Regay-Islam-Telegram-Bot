@@ -97,6 +97,17 @@ def _firebase_get_sync(path):
         return json.loads(response.read().decode("utf-8"))
 
 
+def download_remote_bytes(url, max_bytes, timeout):
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "Regay-Islam-Telegram-Bot/1.0"}
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = response.read(max_bytes + 1)
+    if not data or len(data) > max_bytes:
+        raise ValueError("Remote file is empty or exceeds the allowed size")
+    return data
+
+
 async def firebase_get(path):
     try:
         return await asyncio.to_thread(_firebase_get_sync, path)
@@ -546,18 +557,23 @@ async def show_quran_page(update, page=1, edit=False):
         await progress.edit_text(
             f"⏳ پەڕەی {page} ئامادە دەکرێت...\\n📤 ناردنی وێنە بۆ تێلێگرام"
         )
+        photo = io.BytesIO(await asyncio.to_thread(
+            download_remote_bytes, image_url, 12 * 1024 * 1024, 25
+        ))
+        photo.name = f"mushaf-page-{page:03d}.png"
         if edit:
             # Telegram cannot turn a text message into a photo by editing its media.
             sent = await update.effective_message.reply_photo(
-                photo=image_url, caption=caption, reply_markup=markup
+                photo=photo, caption=caption, reply_markup=markup
             )
             try:
                 await update.effective_message.delete()
             except Exception:
                 log.warning("Could not remove previous Mushaf navigation message")
         else:
+            photo.seek(0)
             sent = await update.effective_message.reply_photo(
-                photo=image_url, caption=caption, reply_markup=markup
+                photo=photo, caption=caption, reply_markup=markup
             )
         try:
             await progress.delete()
@@ -818,9 +834,7 @@ async def send_asset_file(update, context, item):
 
         payload = await asyncio.to_thread(download_asset)
         downloaded = True
-        await status.edit_text(
-            f"✅ فایلەکە وەرگیرا ({len(payload) // (1024*1024)} MB).\\n📤 ئێستا بۆ تێلێگرام دەنێردرێت..."
-        )
+        await status.edit_text("📤 فایلەکە ئامادەیە؛ ئێستا بۆ تێلێگرام دەنێردرێت...")
         stream = io.BytesIO(payload)
         stream.name = filename
         chat_id = update.effective_chat.id
@@ -999,6 +1013,9 @@ async def play_qari_surah(update,context,index,sid):
     with db("surat.db") as c: row=c.execute("SELECT name FROM surat WHERE soraid=?",(sid,)).fetchone()
     surah_name=row[0] if row else f"سوڕەت {sid}"
     qari_name=str(item.get("name_ar") or "قاری").strip()
+    status = await update.effective_message.reply_text(
+        f"⏳ دەنگی {surah_name} بە قاری {qari_name} ئامادە دەکرێت...\n📥 وەرگرتنی MP3"
+    )
     try:
         # Download the MP3 first; Telegram URL fetching can fail on GitHub release redirects.
         def download_audio():
@@ -1011,16 +1028,25 @@ async def play_qari_surah(update,context,index,sid):
                 raise ValueError("Empty audio response")
             return data
         audio_data=await asyncio.to_thread(download_audio)
+        await status.edit_text("📤 دەنگەکە وەرگیرا؛ ئێستا بۆ تێلێگرام دەنێردرێت...")
         audio_file=io.BytesIO(audio_data)
         audio_file.name=f"{sid:03d}.mp3"
         await context.bot.send_audio(chat_id=update.effective_chat.id,audio=audio_file,title=f"{surah_name} — {qari_name}"[:64],performer=qari_name[:64],caption=f"📖 سوڕەتی {surah_name}\n🎙️ قاری: {qari_name}")
+        try:
+            await status.delete()
+        except Exception:
+            pass
         try:
             await qari_ayah_guide(update, str(item.get("id", "")), sid, 0)
         except Exception:
             log.exception("Audio was sent but the ayah timing guide could not be rendered")
     except Exception:
         log.exception("Could not download or send recitation audio: %s",audio_url)
-        await update.effective_message.reply_text("⚠️ ناردنی فایلەکە سەرکەوتوو نەبوو. تکایە دواتر دووبارە هەوڵ بدە.",reply_markup=ik([[InlineKeyboardButton("🔙 گەڕانەوە بۆ سوڕەتەکان",callback_data=f"qr:pick:{index}")]]))
+        try:
+            await status.edit_text("⚠️ ناردنی دەنگی قورئان سەرکەوتوو نەبوو؛ تکایە دواتر دووبارە هەوڵ بدەرەوە.",
+                reply_markup=ik([[InlineKeyboardButton("🔙 گەڕانەوە بۆ سوڕەتەکان",callback_data=f"qr:pick:{index}")]]))
+        except Exception:
+            await update.effective_message.reply_text("⚠️ ناردنی دەنگی قورئان سەرکەوتوو نەبوو.")
 
 async def play_default_qari(update, context, sid):
     selected_id = get_qari(update.effective_user.id)
