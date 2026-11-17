@@ -396,7 +396,7 @@ async def show_tafsir(update,sid,ayah):
 
 async def prayer_city_list(update, page=0, edit=False, mode="prayer"):
     cities=get_cities(); chunk=cities[page*12:(page+1)*12]
-    prefix = "qc" if mode == "qibla" else ("mc" if mode == "month" else "pc")
+    prefix = "mc" if mode == "month" else "pc"
     rows=[[InlineKeyboardButton(name,callback_data=f"{prefix}:{table}")] for name,table,lat,lon in chunk]
     nav=[]
     if page: nav.append(InlineKeyboardButton("⬅️",callback_data=f"pcl:{mode}:{page-1}"))
@@ -501,62 +501,6 @@ async def monthly_prayer_times(update, city=None, month=None, edit=False):
     else:
         await update.effective_message.reply_text(message[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
 
-
-async def request_qibla_location(update):
-    """Ask Telegram to share the user's live location for a more precise Qibla bearing."""
-    keyboard = ReplyKeyboardMarkup(
-        [[KeyboardButton("📍 ناردنی شوێنی من بۆ قیبلە", request_location=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-    await update.effective_message.reply_text(
-        "🧭 بۆ دۆزینەوەی ئاراستەی وردتری قیبلە، شوێنی ئێستات بنێرە. شوێنەکەت تەنها بۆ هەژمارکردنی قیبلە بەکاردێت.",
-        reply_markup=keyboard,
-    )
-
-
-async def handle_location(update, context):
-    location = update.effective_message.location
-    if not location:
-        return
-    lat, lon = math.radians(location.latitude), math.radians(location.longitude)
-    kaaba_lat, kaaba_lon = math.radians(21.4225), math.radians(39.8262)
-    dlon = kaaba_lon - lon
-    y = math.sin(dlon)
-    x = math.cos(lat) * math.tan(kaaba_lat) - math.sin(lat) * math.cos(dlon)
-    bearing = (math.degrees(math.atan2(y, x)) + 360) % 360
-    directions = ["باكوور", "ڕۆژهەڵات", "باشوور", "ڕۆژئاوا"]
-    cardinal = directions[round(bearing / 90) % 4]
-    await update.effective_message.reply_text(
-        f"🧭 *ئاراستەی قیبلە بە شوێنی ئێستات*\n\n"
-        f"📍 وردی شوێن: {location.horizontal_accuracy or 'نەزانراو'} مەتر\n"
-        f"زاویەی قیبلە: *{bearing:.1f}°* لە باکووری ڕاستەقینەوە\n"
-        f"ئاراستەی گشتی: *{cardinal}*\n\n"
-        "_مۆبایلەکەت بۆ ئاراستەکردنی جەستەیی پێویستی بە قطب‌نما و ڕێکخستنی دروستی هەیە._",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=ReplyKeyboardRemove(),
-    )
-
-
-async def qibla(update, city=None):
-    if not city: city=get_city(update.effective_user.id)
-    if not city:
-        await prayer_city_list(update,mode="qibla"); return
-    city_names={x.get("Name"):x.get("id") for x in load_json("cityme") if isinstance(x,dict)}
-    city_display=next((name for name,table in city_names.items() if str(table).casefold()==str(city).casefold()),city)
-    with db("katenwezh62.db") as c:
-        r=c.execute("SELECT latitude,longitude FROM cities WHERE city=?",(city_display,)).fetchone()
-        n=(city_display,)
-    if not r or r[0] is None or r[1] is None:
-        await update.effective_message.reply_text("شوێنی جوگرافی ئەم شارە لە داتابەیسی ئەپەکەدا بەردەست نییە. شارێکی تر هەڵبژێرە."); return
-    lat,lon=map(math.radians,r)
-    kaaba_lat,kaaba_lon=map(math.radians,(21.4225,39.8262))
-    dlon=kaaba_lon-lon
-    y=math.sin(dlon); x=math.cos(lat)*math.tan(kaaba_lat)-math.sin(lat)*math.cos(dlon)
-    bearing=(math.degrees(math.atan2(y,x))+360)%360
-    dirs=["باكوور","ڕۆژهەڵات","باشوور","ڕۆژئاوا"]
-    cardinal=dirs[round(bearing/90)%4]
-    await update.effective_message.reply_text(f"🧭 *ئاراستەی قیبلە — {n[0]}*\n\nئاراستەی قیبلە: *{bearing:.1f}°* لە باكووری ڕاستەقینەوە\nئاراستەی گشتی: *{cardinal}*\n\n_ئەم ژمارەیە لە کۆئۆردیناتی شاری هەڵبژێردراوەوە هەژمار کراوە؛ بۆ وردی زیاتر لەسەر شوێنی خۆت پێویستە GPS بەکاربهێنیت._",parse_mode=ParseMode.MARKDOWN,reply_markup=ik([[InlineKeyboardButton("گۆڕینی شار",callback_data="pcl:qibla:0")]]))
 
 async def send_asset_file(update, context, item):
     """Download a media asset and send it as a Telegram file, never as a URL."""
@@ -1542,8 +1486,6 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             return await prayer_city_list(update,int(bits[1]),True)
         if data.startswith("pc:"):
             city=data[3:]; set_city(q.from_user.id,city); return await prayer_times(update,city,True)
-        if data.startswith("qc:"):
-            city=data[3:]; set_city(q.from_user.id,city); return await qibla(update,city)
         if data.startswith("mc:"):
             city=data[3:]; set_city(q.from_user.id,city); return await monthly_prayer_times(update,city,edit=True)
         if data.startswith("pm:"):
@@ -1822,7 +1764,7 @@ def main():
     app.add_handler(CommandHandler("start",start)); app.add_handler(CommandHandler("menu",menu_cmd)); app.add_handler(CommandHandler("hide",hide_menu_cmd)); app.add_handler(CommandHandler("help",help_cmd))
     app.add_handler(CommandHandler("quran",quran_cmd)); app.add_handler(CommandHandler("prayer",prayer_cmd)); app.add_handler(CommandHandler("search",cmd_search)); app.add_handler(CommandHandler("admin",cmd_admin)); app.add_handler(CommandHandler("cancel",cmd_cancel))
     app.add_handler(CommandHandler("favorites",show_favorites)); app.add_handler(CommandHandler("lastread",show_last_read)); app.add_handler(CommandHandler("settings",show_settings))
-    app.add_handler(CallbackQueryHandler(callback)); app.add_handler(MessageHandler(filters.LOCATION, handle_location)); app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text)); app.add_error_handler(error_handler)
+    app.add_handler(CallbackQueryHandler(callback)); app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text)); app.add_error_handler(error_handler)
     log.info("ڕێگای ئیسلام bot starting")
     app.run_polling(allowed_updates=Update.ALL_TYPES,drop_pending_updates=False)
 
