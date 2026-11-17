@@ -859,9 +859,9 @@ async def books_menu(update, page=0, edit=False):
     if nav:
         buttons.append(nav)
     text = (
-        "📚 *کتێبخانەی ڕێگای ئیسلام*\\n"
+        "📜 *پوختەی سەحیحی موسلیم*\\n"
         f"بەشەکان: {len(rows)} — پەڕە {page+1}/{total_pages}\\n"
-        "بەشێک هەڵبژێرە بۆ بینینی کتێب و فەرموودەکانی."
+        "بەشێک هەڵبژێرە بۆ بینینی فەرموودەکان بە بەش بەش."
     )
     if edit:
         await update.callback_query.edit_message_text(text, reply_markup=ik(buttons), parse_mode=ParseMode.MARKDOWN)
@@ -1279,6 +1279,7 @@ async def handle_text(update,context):
         "🕋 ئایەتی کورسی":lambda:show_ayat_kursi(update),
         "📖 مصحەف پەڕە بە پەڕە":lambda:show_quran_page(update,1),
         "📿 تەسبیح":lambda:tasbih_picker(update),
+        "🙈 مێنیو بشارەوە":lambda:hide_menu_cmd(update,context),
         "📿 زیکرەکان":lambda:json_list(update,"zikrakan",0),
         "🤲 دوعاکان":lambda:show_dua(update,0),
         "📜 فەرموودەکان":lambda:hadith_menu(update),
