@@ -63,7 +63,8 @@ def db(name: str):
 def main_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("📖 قورئانی پیرۆز"), KeyboardButton("🕌 کاتەکانی بانگ")],
-        [KeyboardButton("🕋 ئایەتی کورسی"), KeyboardButton("🗓 کاتەکانی بانگی مانگانە")],
+        [KeyboardButton("🕋 ئایەتی کورسی"), KeyboardButton("📖 مصحەف پەڕە بە پەڕە")],
+        [KeyboardButton("🗓 کاتەکانی بانگی مانگانە")],
         [KeyboardButton("🧭 ئاراستەی قیبلە"), KeyboardButton("📿 تەسبیح و زیکر")],
         [KeyboardButton("🤲 دوعاکان"), KeyboardButton("📚 کتێب و فەرموودە")],
         [KeyboardButton("🌙 ڕەمەزان"), KeyboardButton("✨ ناوەکانی خودا")],
@@ -165,6 +166,50 @@ async def show_suras(update, page=0, edit=False):
     text=f"📖 *سوڕەتەکانی قورئانی پیرۆز*\nلاپەڕە {page+1} لە 10 — سوڕەتێک هەڵبژێرە:"
     if edit: await update.callback_query.edit_message_text(text,reply_markup=markup,parse_mode=ParseMode.MARKDOWN)
     else: await update.effective_message.reply_text(text,reply_markup=markup,parse_mode=ParseMode.MARKDOWN)
+
+async def show_quran_page(update, page=1, edit=False):
+    """Render a Mushaf-style page using the exact page/verse map bundled with the Android app."""
+    page = max(1, min(604, int(page)))
+    with db("regayislam.db") as conn:
+        info_path = DATA / "recitation_timings" / "ayah_info.db"
+        conn.execute("ATTACH DATABASE ? AS info", (f"file:{info_path}?mode=ro",))
+        rows = conn.execute(
+            """
+            SELECT p.surah_id,p.verse_id,a.sura_name_ar,a.text,MIN(p.line_number) AS line_no
+            FROM info.page_data_line p
+            JOIN ayah_text a ON a.suraId=p.surah_id AND a.ayah=p.verse_id
+            WHERE p.page_number=?
+            GROUP BY p.surah_id,p.verse_id,a.sura_name_ar,a.text
+            ORDER BY line_no,p.surah_id,p.verse_id
+            """,
+            (page,),
+        ).fetchall()
+    if not rows:
+        return await update.effective_message.reply_text("ئەم پەڕەیە لە داتای مصحەفدا نەدۆزرایەوە.")
+    save_last_read(update.effective_user.id, rows[0][0], 0)
+    parts = [f"📖 *مصحەفی قورئانی پیرۆز — پەڕەی {page}/604*\\n"]
+    last_surah = None
+    for sid, ayah, surah_name, arabic, line_no in rows:
+        if sid != last_surah:
+            parts.append(f"\\n*{surah_name}*")
+            last_surah = sid
+        parts.append(f"﴿{ayah}﴾ {arabic}")
+    text = "\\n".join(parts)
+    buttons = []
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️ پەڕەی پێشوو", callback_data=f"qp:{page-1}"))
+    if page < 604:
+        nav.append(InlineKeyboardButton("پەڕەی داهاتوو ➡️", callback_data=f"qp:{page+1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("📖 لیستی سوڕەتەکان", callback_data="q:s:0")])
+    markup = ik(buttons)
+    if edit:
+        await update.callback_query.edit_message_text(text[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.effective_message.reply_text(text[:3900], reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+
 
 async def show_ayat_kursi(update):
     """Open Ayat al-Kursi directly from the original Quran database."""
@@ -682,6 +727,7 @@ async def handle_text(update,context):
         "🕌 کاتەکانی بانگ":lambda:prayer_city_list(update),
         "🗓 کاتەکانی بانگی مانگانە":lambda:monthly_prayer_times(update),
         "🕋 ئایەتی کورسی":lambda:show_ayat_kursi(update),
+        "📖 مصحەف پەڕە بە پەڕە":lambda:show_quran_page(update,1),
         "🧭 ئاراستەی قیبلە":lambda:request_qibla_location(update),
         "📿 تەسبیح و زیکر":lambda:tasbih(update,context),
         "🤲 دوعاکان":lambda:show_dua(update,0),
@@ -764,6 +810,7 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         if data.startswith("fv:del:"):
             remove_favorite(q.from_user.id, int(data.split(":")[2]))
             return await show_favorites(update)
+        if data.startswith("qp:"): return await show_quran_page(update,int(data.split(":")[1]),True)
         if data.startswith("q:s:"): return await show_suras(update,int(data.split(":")[2]),True)
         if data.startswith("q:a:"):
             _,_,sid,off=data.split(":"); return await show_ayahs(update,int(sid),int(off),True)
