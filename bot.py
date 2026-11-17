@@ -119,11 +119,37 @@ async def firebase_live_channels():
     return [x for x in rows if str(x.get("url") or x.get("link") or "").strip()]
 
 
-async def firebase_videos():
-    value = await firebase_get("videoNew")
+VIDEO_PROFILES = [
+    {"image": "https://github.com/quranofficial/Profile/raw/main/IMG_20260218_221732_861.jpg", "name": "توێشووی سەفەر", "tag": "20262018102057"},
+    {"image": "https://github.com/quranofficial/M.Hawre/raw/main/photo_2025-12-09_02-26-14.jpg", "name": "م.هاوڕێ (قیامەت)", "tag": "20252709022751"},
+    {"image": "https://github.com/quranofficial/Profile/raw/main/IMG_8673.JPG", "name": "قورئانی پیرۆز", "tag": "20255826105848"},
+    {"image": "https://github.com/quranofficial/Profile/raw/main/20240405_210531.png", "name": "ڕێگای ئیسلام", "tag": "20251908071938"},
+    {"image": "https://github.com/quranofficial/Profile/raw/main/663545Image1.jpg", "name": "م.کرێکار", "tag": "20250928010945"},
+    {"image": "https://github.com/quranofficial/Profile/raw/main/channels4_profile.jpg", "name": "م.محمد أحمد کەلاری", "tag": "20253612033606"},
+    {"image": "https://github.com/quranofficial/Profile/raw/main/IMG_20250305_154200_574.jpg", "name": "فێربوونی قورئانی پیرۆز", "tag": "20254305034300"},
+    {"image": "https://github.com/quranofficial/Profile/raw/main/600px-%D9%85%D8%AD%D9%85%D8%AF_%D9%85%D9%84%D8%A7_%D9%81%D8%A7%D8%A6%D9%82.jpg", "name": "م.محمد فائق شارەزووری", "tag": "20253505033537"},
+    {"image": "https://github.com/quranofficial/Profile/raw/main/download.jpeg", "name": "م.ماکوان کەریم", "tag": "20252405032442"},
+]
+
+
+async def firebase_video_profiles():
+    value = _firebase_decode(await firebase_get("videoall"))
+    if isinstance(value, list):
+        return [
+            {"image": str(item.get("image") or "").strip(),
+             "name": str(item.get("name") or "بێ ناو").strip(),
+             "tag": str(item.get("tag") or "").strip()}
+            for item in value if isinstance(item, dict) and str(item.get("tag") or "").strip()
+        ]
+    # Keep the supplied profile list available if the optional Firebase node is unavailable.
+    return VIDEO_PROFILES
+
+
+async def firebase_videos(profile_tag=None):
+    value = await firebase_get(f"videoNew/{profile_tag}" if profile_tag else "videoNew")
     rows = []
     if isinstance(value, dict):
-        for folder, items in value.items():
+        for folder, items in ([(str(profile_tag), value)] if profile_tag else value.items()):
             if not isinstance(items, dict):
                 continue
             for key, item in items.items():
@@ -144,7 +170,7 @@ MENU_ITEMS = {
     "feedback": "💬 پێشنیار و ڕەخنە", "ramadan": "🌙 ڕەمەزان",
     "names": "📿 ناوەکانی خودا",
     "reciters": "🎙️ قارییەکان", "search": "🔎 گەڕان",
-    "topics": "📚 هەموو بابەتەکان", "live": "📡 پەخشی ڕاستەوخۆ", "videos": "🎞️ ڤیدیۆی ئاینی", "favorites": "⭐ دڵخوازەکان",
+    "topics": "📚 هەموو بابەتەکان", "videos": "🎞️ ڤیدیۆی ئاینی", "favorites": "⭐ دڵخوازەکان",
     "lastread": "📍 دوا خوێندنەوە", "settings": "⚙️ ڕێکخستن",
     "about": "ℹ️ دەربارەی بۆت",
 }
@@ -980,65 +1006,61 @@ async def play_default_qari(update, context, sid):
     return await play_qari_surah(update, context, index, sid)
 
 
-async def live_broadcast_menu(update):
-    streams = await firebase_live_channels()
-    if not streams:
-        streams = [
-            {"name": "مەککەی پیرۆز", "image": "https://github.com/quranofficial/Rsmakan/raw/main/makka.png",
-             "url": "https://win.holol.com/live/quran/playlist.m3u8"},
-            {"name": "مەدینەی پیرۆز", "image": "https://github.com/quranofficial/Rsmakan/raw/main/madina.png",
-             "url": "https://win.holol.com/live/sunnah/playlist.m3u8"},
-        ]
-    for stream in streams:
-        name = str(stream.get("name") or stream.get("title") or "پەخشی ڕاستەوخۆ").strip()
-        image_url = str(stream.get("image") or "").strip()
-        stream_url = str(stream.get("url") or stream.get("link") or "").strip()
-        markup = ik([[InlineKeyboardButton(f"▶️ بینینی پەخشی {name}"[:60], url=stream_url)]])
+async def firebase_video_profiles_menu(update):
+    profiles = await firebase_video_profiles()
+    await update.effective_message.reply_text(
+        f"🎞️ *ڤیدیۆی ئاینی*\n\nپرۆفایلێک هەڵبژێرە بۆ بینینی ڤیدیۆکانی:",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    for profile in profiles:
+        name = profile["name"]
+        tag = profile["tag"]
+        image_url = profile["image"]
+        markup = ik([[InlineKeyboardButton(f"🎬 بینینی ڤیدیۆکانی {name}"[:60], callback_data=f"fbprofile:{tag}")]])
         try:
             if image_url.startswith(("https://", "http://")):
                 await update.effective_message.reply_photo(
-                    photo=image_url, caption=f"📡 پەخشی ڕاستەوخۆ — {name}", reply_markup=markup
+                    photo=image_url, caption=f"👤 {name}", reply_markup=markup
                 )
             else:
-                await update.effective_message.reply_text(
-                    f"📡 پەخشی ڕاستەوخۆ — {name}", reply_markup=markup
-                )
+                await update.effective_message.reply_text(f"👤 {name}", reply_markup=markup)
         except Exception:
-            log.exception("Could not send live stream card for %s", name)
-            await update.effective_message.reply_text(
-                f"📡 {name}", reply_markup=markup, disable_web_page_preview=True
-            )
+            log.exception("Could not send video profile card: %s", tag)
+            await update.effective_message.reply_text(f"👤 {name}", reply_markup=markup)
 
 
-async def firebase_video_menu(update, page=0, edit=False):
-    videos = await firebase_videos()
+async def firebase_video_menu(update, profile_tag, page=0, edit=False):
+    videos = await firebase_videos(profile_tag)
+    profile = next((p for p in VIDEO_PROFILES if p["tag"] == str(profile_tag)), None)
     if not videos:
-        message = "🎞️ ڤیدیۆی ئاینی لە Firebase بەردەست نییە یان پەیوەندی پچڕاوە."
+        message = "🎞️ هیچ ڤیدیۆیەک بۆ ئەم پرۆفایلە لە Firebase نەدۆزرایەوە."
+        markup = ik([[InlineKeyboardButton("⬅️ گەڕانەوە بۆ پرۆفایلەکان", callback_data="fbprofiles")]])
         if edit:
-            return await update.callback_query.edit_message_text(message)
-        return await update.effective_message.reply_text(message)
+            return await update.callback_query.edit_message_text(message, reply_markup=markup)
+        return await update.effective_message.reply_text(message, reply_markup=markup)
     page_size = 10
     page = max(0, min(int(page), (len(videos)-1)//page_size))
     rows = []
     for index, item in enumerate(videos[page*page_size:(page+1)*page_size], start=page*page_size):
         title = str(item.get("name") or item.get("title") or f"ڤیدیۆی {index+1}").strip()
-        rows.append([InlineKeyboardButton(f"🎬 {title}"[:58], callback_data=f"fbv:{index}")])
+        rows.append([InlineKeyboardButton(f"🎬 {title}"[:58], callback_data=f"fbv:{profile_tag}:{index}")])
     nav = []
     if page:
-        nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"fbvp:{page-1}"))
+        nav.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"fbvp:{profile_tag}:{page-1}"))
     if (page+1)*page_size < len(videos):
-        nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"fbvp:{page+1}"))
-    if nav:
-        rows.append(nav)
-    message = f"🎞️ *ڤیدیۆی ئاینی*\n{len(videos)} ڤیدیۆ لە Firebase — لاپەڕە {page+1}"
+        nav.append(InlineKeyboardButton("دواتر ➡️", callback_data=f"fbvp:{profile_tag}:{page+1}"))
+    nav.append(InlineKeyboardButton("👥 پرۆفایلەکان", callback_data="fbprofiles"))
+    rows.append(nav)
+    name = profile["name"] if profile else "پرۆفایل"
+    message = f"🎞️ *ڤیدیۆکانی {name}*\n{len(videos)} ڤیدیۆ — لاپەڕە {page+1}"
     if edit:
         await update.callback_query.edit_message_text(message, reply_markup=ik(rows), parse_mode=ParseMode.MARKDOWN)
     else:
         await update.effective_message.reply_text(message, reply_markup=ik(rows), parse_mode=ParseMode.MARKDOWN)
 
 
-async def send_firebase_video(update, context, index):
-    videos = await firebase_videos()
+async def send_firebase_video(update, context, profile_tag, index):
+    videos = await firebase_videos(profile_tag)
     if not 0 <= index < len(videos):
         return await update.effective_message.reply_text("ڤیدیۆکە لە Firebase نەدۆزرایەوە.")
     item = videos[index]
@@ -1565,8 +1587,7 @@ async def handle_text(update,context):
         "📿 ناوەکانی خودا":lambda:names_menu(update,0),
         "🎙️ قارییەکان":lambda:show_qari_menu(update,0),
         "📚 هەموو بابەتەکان":lambda:content_menu(update),
-        "📡 پەخشی ڕاستەوخۆ":lambda:live_broadcast_menu(update),
-        "🎞️ ڤیدیۆی ئاینی":lambda:firebase_video_menu(update,0),
+        "🎞️ ڤیدیۆی ئاینی":lambda:firebase_video_profiles_menu(update),
         "🔎 گەڕان":lambda:search_choose(update),
         "⭐ دڵخوازەکان":lambda:show_favorites(update),
         "📍 دوا خوێندنەوە":lambda:show_last_read(update),
@@ -1702,10 +1723,16 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             context.user_data["admin_broadcast_waiting"] = True
             return await q.message.reply_text("📢 پەیامەکە بنووسە. بۆ هەڵوەشاندنەوە /cancel بنووسە.")
     try:
+        if data == "fbprofiles":
+            return await firebase_video_profiles_menu(update)
+        if data.startswith("fbprofile:"):
+            return await firebase_video_menu(update, data.split(":", 1)[1], 0, True)
         if data.startswith("fbvp:"):
-            return await firebase_video_menu(update, int(data.split(":")[1]), True)
+            _, tag, page = data.split(":")
+            return await firebase_video_menu(update, tag, int(page), True)
         if data.startswith("fbv:"):
-            return await send_firebase_video(update, context, int(data.split(":")[1]))
+            _, tag, index = data.split(":")
+            return await send_firebase_video(update, context, tag, int(index))
         if data.startswith("qr:list:"): return await show_qari_menu(update,int(data.split(":")[2]),True)
         if data.startswith("qr:pick:"): return await show_qari_surahs(update,int(data.split(":")[2]))
         if data.startswith("qr:play:"):
