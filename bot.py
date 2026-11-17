@@ -1038,35 +1038,26 @@ async def play_default_qari(update, context, sid):
 
 async def firebase_video_profiles_menu(update):
     profiles = await firebase_video_profiles()
+    if not profiles:
+        return await update.effective_message.reply_text("هیچ پرۆفایلێک لە Firebase نەدۆزرایەوە.")
+    # One compact keyboard replaces nine separately rate-limited photo messages.
+    rows = [
+        [InlineKeyboardButton(f"🎬 {p['name']}"[:58], callback_data=f"fbprofile:{p['tag']}")]
+        for p in profiles
+    ]
     await update.effective_message.reply_text(
-        f"🎞️ *ڤیدیۆی ئاینی*\n\nپرۆفایلێک هەڵبژێرە بۆ بینینی ڤیدیۆکانی:",
-        parse_mode=ParseMode.MARKDOWN,
+        "🎞️ *ڤیدیۆی ئاینی*\n\nپرۆفایلێک هەڵبژێرە بۆ بینینی ڤیدیۆکانی:",
+        reply_markup=ik(rows), parse_mode=ParseMode.MARKDOWN,
     )
-    for profile in profiles:
-        name = profile["name"]
-        tag = profile["tag"]
-        image_url = profile["image"]
-        markup = ik([[InlineKeyboardButton(f"🎬 بینینی ڤیدیۆکانی {name}"[:60], callback_data=f"fbprofile:{tag}")]])
-        try:
-            if image_url.startswith(("https://", "http://")):
-                await update.effective_message.reply_photo(
-                    photo=image_url, caption=f"👤 {name}", reply_markup=markup
-                )
-            else:
-                await update.effective_message.reply_text(f"👤 {name}", reply_markup=markup)
-        except Exception:
-            log.exception("Could not send video profile card: %s", tag)
-            await update.effective_message.reply_text(f"👤 {name}", reply_markup=markup)
-        # Telegram private-chat sending is rate-limited; space out the nine profile cards.
-        if profile is not profiles[-1]:
-            await asyncio.sleep(1.05)
 
 
 async def firebase_video_menu(update, profile_tag, page=0, edit=False):
     videos = await firebase_videos(profile_tag)
-    profile = next((p for p in VIDEO_PROFILES if p["tag"] == str(profile_tag)), None)
+    profiles = await firebase_video_profiles()
+    profile = next((p for p in profiles if p["tag"] == str(profile_tag)), None)
     if not videos:
-        message = "🎞️ هیچ ڤیدیۆیەک بۆ ئەم پرۆفایلە لە Firebase نەدۆزرایەوە."
+        profile_name = profile["name"] if profile else "ئەم پرۆفایلە"
+        message = f"🎞️ هیچ ڤیدیۆیەک بۆ {profile_name} لە Firebase نەدۆزرایەوە."
         markup = ik([[InlineKeyboardButton("⬅️ گەڕانەوە بۆ پرۆفایلەکان", callback_data="fbprofiles")]])
         if edit:
             return await update.callback_query.edit_message_text(message, reply_markup=markup)
@@ -1085,7 +1076,7 @@ async def firebase_video_menu(update, profile_tag, page=0, edit=False):
     nav.append(InlineKeyboardButton("👥 پرۆفایلەکان", callback_data="fbprofiles"))
     rows.append(nav)
     name = profile["name"] if profile else "پرۆفایل"
-    message = f"🎞️ *ڤیدیۆکانی {name}*\n{len(videos)} ڤیدیۆ — لاپەڕە {page+1}"
+    message = f"👤 پرۆفایل: *{name}*\n🎞️ ڤیدیۆکان: {len(videos)} — لاپەڕە {page+1}"
     if edit:
         await update.callback_query.edit_message_text(message, reply_markup=ik(rows), parse_mode=ParseMode.MARKDOWN)
     else:
