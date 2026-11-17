@@ -1983,11 +1983,12 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             if len(bits)==3: return await prayer_city_list(update,int(bits[2]),True,bits[1])
             return await prayer_city_list(update,int(bits[1]),True)
         if data.startswith("pc:"):
-            city=data[3:]; set_city(q.from_user.id,city); return await prayer_times(update,city,True)
+            city=data[3:]; await asyncio.to_thread(set_city,q.from_user.id,city); return await prayer_times(update,city,True)
         if data.startswith("mc:"):
-            city=data[3:]; set_city(q.from_user.id,city); return await monthly_prayer_times(update,city,edit=True)
+            city=data[3:]; await asyncio.to_thread(set_city,q.from_user.id,city); return await monthly_prayer_times(update,city,edit=True)
         if data.startswith("pm:"):
-            return await monthly_prayer_times(update,get_city(q.from_user.id),data[3:],edit=True)
+            city = await asyncio.to_thread(get_city, q.from_user.id)
+            return await monthly_prayer_times(update,city,data[3:],edit=True)
         if data.startswith("hd:"):
             if data == "hd:400": return await json_list(update,"farmwda",0,True)
             if data == "hd:muslim": return await books_menu(update,0,True)
