@@ -173,6 +173,13 @@ def change_tasbih(uid: int, change: int) -> int:
     return int(result or 0)
 
 
+def reset_tasbih(uid: int):
+    _request(
+        "PATCH", "bot_users", params={"user_id": f"eq.{uid}"},
+        payload={"tasbih": 0}, prefer="return=minimal",
+    )
+
+
 def get_user_count() -> int:
     result = _request("POST", "rpc/bot_user_count", payload={})
     return int(result or 0)
