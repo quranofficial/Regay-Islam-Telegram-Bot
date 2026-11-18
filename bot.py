@@ -990,7 +990,7 @@ async def monthly_prayer_times(update, city=None, month=None, edit=False):
     by_day = {int(str(row[0]).split("-")[1]): row[1:] for row in rows}
     lines = [
         f"🗓 *کاتەکانی بانگی مانگانە — {city_display}*",
-        f"📅 زاینی: {month_date:%Y-%m} — هەجری: {hijri_date_for(month_date)}",
+        f"📅 زاینی: {month_date:%Y-%m} — کۆچی: {hijri_date_for(month_date)}",
         "",
         "ڕۆژ | بەیانی | خۆرهەڵاتن | نیوەڕۆ | عەسر | ئێوارە | عیشا",
     ]
