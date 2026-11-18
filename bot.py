@@ -673,7 +673,10 @@ async def show_quran_page(update, page=1, edit=False):
         buttons.append(nav)
     if rows:
         await asyncio.to_thread(save_last_read, update.effective_user.id, rows[0], max(0, int(rows[1]) - 1))
-        buttons.append([InlineKeyboardButton("🎧 گوێگرتن بە قاریی هەڵبژێردراو", callback_data=f"qaudio:{rows[0]}")])
+        buttons.append([
+            InlineKeyboardButton("🎧 دەنگی ئەم پەڕەیە", callback_data=f"qpa:{page}"),
+            InlineKeyboardButton("📖 دەنگی تەواوی سووڕەت", callback_data=f"qaudio:{rows[0]}"),
+        ])
     buttons.append([InlineKeyboardButton("📚 لیستی سووڕەتەکان", callback_data="ms:list:0")])
     markup = ik(buttons)
 
@@ -1344,6 +1347,118 @@ async def play_qari_surah(update,context,index,sid):
                 reply_markup=ik([[InlineKeyboardButton("🔙 گەڕانەوە بۆ سوڕەتەکان",callback_data=f"qr:pick:{index}")]]))
         except Exception:
             await update.effective_message.reply_text("⚠️ ناردنی دەنگی قورئان سەرکەوتوو نەبوو.")
+
+async def play_mushaf_page_audio(update, context, page):
+    """Send only the recitation audio covering the ayahs printed on one Mushaf page."""
+    uid = update.effective_user.id
+    reciters = [r for r in load_json("dangakan")
+                if isinstance(r, dict) and str(r.get("doxx", "")).lower() == "true" and r.get("url")]
+    selected_id = await asyncio.to_thread(get_qari, uid)
+    item = next((r for r in reciters if str(r.get("id")) == str(selected_id)), None)
+    if item is None:
+        await update.effective_message.reply_text("🎙️ سەرەتا قاریی دڵخوازت لە ڕێکخستن هەڵبژێرە:")
+        return await setup_qari_menu(update)
+    reciter_id = str(item.get("id", ""))
+    timing_path = DATA / "recitation_timings" / f"{reciter_id}.db"
+    if not timing_path.is_file():
+        return await update.effective_message.reply_text("⚠️ کاتی ئایەت بۆ قاریی هەڵبژێردراو بەردەست نییە؛ تکایە قارییەکی تر هەڵبژێرە.")
+    info_path = DATA / "recitation_timings" / "ayah_info.db"
+    with sqlite3.connect(f"file:{info_path}?mode=ro", uri=True) as conn:
+        page_rows = conn.execute(
+            """SELECT surah_id, verse_id, MIN(line_number) AS first_line
+               FROM page_data_line WHERE page_number=?
+               GROUP BY surah_id, verse_id ORDER BY first_line""",
+            (int(page),),
+        ).fetchall()
+    if not page_rows:
+        return await update.effective_message.reply_text("⚠️ زانیاریی ئایەتەکانی ئەم پەڕەیە نەدۆزرایەوە.")
+    # Keep verse ranges separate if a Mushaf page crosses a surah boundary.
+    groups = []
+    for sid, ayah, _line in page_rows:
+        sid, ayah = int(sid), int(ayah)
+        if groups and groups[-1][0] == sid and ayah <= groups[-1][2] + 1:
+            groups[-1][2] = max(groups[-1][2], ayah)
+        else:
+            groups.append([sid, ayah, ayah])
+    qari_name = str(item.get("name_ar") or "قاری").strip()
+    base = str(item.get("url", "")).strip().rstrip("/")
+    if not base.startswith(("https://", "http://")):
+        return await update.effective_message.reply_text("⚠️ لینکی دەنگی قاری نادروستە.")
+    status = await update.effective_message.reply_text(
+        f"⏳ دەنگی پەڕەی {page} بە قاری {qari_name} ئامادە دەکرێت..."
+    )
+    try:
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            raise RuntimeError("ffmpeg/ffprobe لە سێرڤەر بەردەست نییە")
+        with tempfile.TemporaryDirectory(prefix=f"regay-page-{page}-") as temp_dir:
+            clips = []
+            async with LARGE_AUDIO_DOWNLOAD_SEMAPHORE:
+                for number, (sid, first_ayah, last_ayah) in enumerate(groups, 1):
+                    audio_url = f"{base}/{sid:03d}.mp3"
+                    audio_data = await asyncio.to_thread(
+                        download_cached_bytes, audio_url, 512 * 1024 * 1024, 120
+                    )
+                    source = os.path.join(temp_dir, f"surah-{sid:03d}.mp3")
+                    with open(source, "wb") as fp:
+                        fp.write(audio_data)
+                    with sqlite3.connect(f"file:{timing_path}?mode=ro", uri=True) as conn:
+                        timing_rows = conn.execute(
+                            "SELECT ayah,time FROM timings WHERE sura=? ORDER BY ayah",
+                            (sid,),
+                        ).fetchall()
+                    starts = {int(a): max(0, int(ms)) / 1000.0 for a, ms in timing_rows}
+                    if first_ayah not in starts:
+                        raise RuntimeError(f"کاتی دەستپێکی ئایەتی {first_ayah} بۆ سووڕەتی {sid} نییە")
+                    start_seconds = starts[first_ayah]
+                    next_starts = [value for ayah, value in starts.items() if ayah > last_ayah]
+                    if next_starts:
+                        end_seconds = min(next_starts)
+                    else:
+                        probe = subprocess.run(
+                            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                             "-of", "default=noprint_wrappers=1:nokey=1", source],
+                            capture_output=True, text=True, timeout=60, check=True,
+                        )
+                        end_seconds = float(probe.stdout.strip())
+                    duration = end_seconds - start_seconds
+                    if not math.isfinite(duration) or duration <= 0:
+                        raise RuntimeError("ماوەی دەنگی ئایەتەکان نادروستە")
+                    output = os.path.join(temp_dir, f"page-{page}-part-{number}.mp3")
+                    subprocess.run(
+                        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                         "-ss", f"{start_seconds:.3f}", "-i", source, "-t", f"{duration:.3f}",
+                         "-vn", "-c:a", "libmp3lame", "-b:a", "128k", output],
+                        capture_output=True, text=True, timeout=300, check=True,
+                    )
+                    if not os.path.isfile(output) or os.path.getsize(output) == 0:
+                        raise RuntimeError("بڕینی دەنگی ئەم پەڕەیە سەرکەوتوو نەبوو")
+                    clips.append((output, sid, first_ayah, last_ayah))
+            await status.edit_text(f"📤 دەنگی پەڕەی {page} ئامادەیە؛ دەنێردرێت...")
+            for part_number, (clip_path, sid, first_ayah, last_ayah) in enumerate(clips, 1):
+                with db("surat.db") as conn:
+                    surah_row = conn.execute("SELECT name FROM surat WHERE soraid=?", (sid,)).fetchone()
+                surah_name = surah_row[0] if surah_row else f"سووڕەت {sid}"
+                with open(clip_path, "rb") as audio:
+                    await context.bot.send_audio(
+                        chat_id=update.effective_chat.id, audio=audio,
+                        title=f"پەڕە {page} — {surah_name}"[:64],
+                        performer=qari_name[:64],
+                        caption=(f"📖 دەنگی پەڕەی {page}\n"
+                                 f"📚 {surah_name}: ئایەت {first_ayah} تا {last_ayah}\n"
+                                 f"🎙️ قاری: {qari_name}"),
+                        read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
+                    )
+        try:
+            await status.delete()
+        except Exception:
+            pass
+    except Exception as exc:
+        log.exception("Could not create Mushaf page audio for page %s", page)
+        try:
+            await status.edit_text(f"⚠️ ناردنی دەنگی پەڕەکە سەرکەوتوو نەبوو.\n{str(exc)[:300]}")
+        except Exception:
+            pass
+
 
 async def play_default_qari(update, context, sid):
     selected_id = await asyncio.to_thread(get_qari, update.effective_user.id)
@@ -2091,6 +2206,8 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
     if data == "mo:done":
         await q.edit_message_text("✅ ڕیزبەندی مێنیوەکەت پاشەکەوت کرا.")
         return await q.message.reply_text("مێنیوی نوێت ئامادەیە:", reply_markup=main_keyboard(q.from_user.id))
+    if data.startswith("qpa:"):
+        return await play_mushaf_page_audio(update, context, int(data.split(":")[1]))
     if data.startswith("qaudio:"):
         return await play_default_qari(update, context, int(data.split(":")[1]))
     if data.startswith("qg:"):
