@@ -1463,47 +1463,47 @@ async def play_mushaf_page_audio(update, context, page):
                         download_cached_file, audio_url, 512 * 1024 * 1024, 120
                     )
                 source = str(source_path)
-                    with sqlite3.connect(f"file:{timing_path}?mode=ro", uri=True) as conn:
-                        timing_rows = conn.execute(
-                            "SELECT ayah,time FROM timings WHERE sura=? ORDER BY ayah",
-                            (sid,),
-                        ).fetchall()
-                    starts = {}
-                    for ayah_number, raw_ms in timing_rows:
-                        # Timing databases may store milliseconds as REAL (e.g. 2320.0).
-                        try:
-                            milliseconds = float(raw_ms)
-                            if math.isfinite(milliseconds) and milliseconds >= 0:
-                                starts[int(float(ayah_number))] = milliseconds / 1000.0
-                        except (TypeError, ValueError, OverflowError):
-                            log.warning("Skipping invalid recitation timing: surah=%s ayah=%r time=%r",
-                                        sid, ayah_number, raw_ms)
-                    if first_ayah not in starts:
-                        raise RuntimeError(f"کاتی دەستپێکی ئایەتی {first_ayah} بۆ سووڕەتی {sid} نییە")
-                    start_seconds = starts[first_ayah]
-                    next_starts = [value for ayah, value in starts.items() if ayah > last_ayah]
-                    if next_starts:
-                        end_seconds = min(next_starts)
-                    else:
-                        probe = subprocess.run(
-                            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                             "-of", "default=noprint_wrappers=1:nokey=1", source],
-                            capture_output=True, text=True, timeout=60, check=True,
-                        )
-                        end_seconds = float(probe.stdout.strip())
-                    duration = end_seconds - start_seconds
-                    if not math.isfinite(duration) or duration <= 0:
-                        raise RuntimeError("ماوەی دەنگی ئایەتەکان نادروستە")
-                    output = os.path.join(temp_dir, f"page-{page}-part-{number}.mp3")
-                    subprocess.run(
-                        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                         "-ss", f"{start_seconds:.3f}", "-i", source, "-t", f"{duration:.3f}",
-                         "-vn", "-c:a", "libmp3lame", "-b:a", "128k", output],
-                        capture_output=True, text=True, timeout=300, check=True,
+                with sqlite3.connect(f"file:{timing_path}?mode=ro", uri=True) as conn:
+                    timing_rows = conn.execute(
+                        "SELECT ayah,time FROM timings WHERE sura=? ORDER BY ayah",
+                        (sid,),
+                    ).fetchall()
+                starts = {}
+                for ayah_number, raw_ms in timing_rows:
+                    # Timing databases may store milliseconds as REAL (e.g. 2320.0).
+                    try:
+                        milliseconds = float(raw_ms)
+                        if math.isfinite(milliseconds) and milliseconds >= 0:
+                            starts[int(float(ayah_number))] = milliseconds / 1000.0
+                    except (TypeError, ValueError, OverflowError):
+                        log.warning("Skipping invalid recitation timing: surah=%s ayah=%r time=%r",
+                                    sid, ayah_number, raw_ms)
+                if first_ayah not in starts:
+                    raise RuntimeError(f"کاتی دەستپێکی ئایەتی {first_ayah} بۆ سووڕەتی {sid} نییە")
+                start_seconds = starts[first_ayah]
+                next_starts = [value for ayah, value in starts.items() if ayah > last_ayah]
+                if next_starts:
+                    end_seconds = min(next_starts)
+                else:
+                    probe = subprocess.run(
+                        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                         "-of", "default=noprint_wrappers=1:nokey=1", source],
+                        capture_output=True, text=True, timeout=60, check=True,
                     )
-                    if not os.path.isfile(output) or os.path.getsize(output) == 0:
-                        raise RuntimeError("بڕینی دەنگی ئەم پەڕەیە سەرکەوتوو نەبوو")
-                    clips.append((output, sid, first_ayah, last_ayah))
+                    end_seconds = float(probe.stdout.strip())
+                duration = end_seconds - start_seconds
+                if not math.isfinite(duration) or duration <= 0:
+                    raise RuntimeError("ماوەی دەنگی ئایەتەکان نادروستە")
+                output = os.path.join(temp_dir, f"page-{page}-part-{number}.mp3")
+                subprocess.run(
+                    ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                     "-ss", f"{start_seconds:.3f}", "-i", source, "-t", f"{duration:.3f}",
+                     "-vn", "-c:a", "libmp3lame", "-b:a", "128k", output],
+                    capture_output=True, text=True, timeout=300, check=True,
+                )
+                if not os.path.isfile(output) or os.path.getsize(output) == 0:
+                    raise RuntimeError("بڕینی دەنگی ئەم پەڕەیە سەرکەوتوو نەبوو")
+                clips.append((output, sid, first_ayah, last_ayah))
             await status.edit_text(f"📤 دەنگی پەڕەی {page} ئامادەیە؛ دەنێردرێت...")
             for part_number, (clip_path, sid, first_ayah, last_ayah) in enumerate(clips, 1):
                 with db("surat.db") as conn:
