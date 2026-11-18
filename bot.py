@@ -492,10 +492,17 @@ async def show_menu_order(update, edit=False):
 
 async def show_settings(update, context=None):
     uid = update.effective_user.id
-    city, qari_id, zikr_index, notifications = await asyncio.gather(
+    city, qari_id, zikr_index, notifications, tafsir_index = await asyncio.gather(
         asyncio.to_thread(get_city, uid), asyncio.to_thread(get_qari, uid),
         asyncio.to_thread(get_tasbih_zikr, uid), asyncio.to_thread(get_prayer_notifications, uid),
+        asyncio.to_thread(get_preferred_tafsir, uid),
     )
+    tafsir_options = [
+        "تەفسیری ڕێبەر", "تەفسیری ڕامان", "پوختەی تەفسیر", "تەفسیری ئاسان",
+        "تەفسیری سەناهی", "تەفسیری هەژار", "تەفسیری ژین", "تەفسیری مایسەر",
+        "تەفسیری ڕۆشن", "تەفسیری تەوحید",
+    ]
+    tafsir_label = tafsir_options[tafsir_index] if 0 <= tafsir_index < len(tafsir_options) else tafsir_options[0]
     city_label = city_display_name(city) if city else "دیاری نەکراوە"
     qari = next((r.get("name_ar", "نەزانراو") for r in load_json("dangakan")
                  if isinstance(r, dict) and str(r.get("id")) == str(qari_id)), "هەڵنەبژێردراو")
@@ -504,15 +511,35 @@ async def show_settings(update, context=None):
     notify_label = "🟢 چالاکە" if notifications else "🔴 ناچالاکە"
     notify_action = "off" if notifications else "on"
     await update.effective_message.reply_text(
-        f"⚙️ *ڕێکخستنەکانی من*\n\n🏙 شاری هەڵبژێردراو: {city_label}\n🎙️ قاری: {qari}\n📿 ژمارەی تەسبیح: {tasbih_count}\n🔔 ئاگادارکردنەوەی کاتی بانگ: {notify_label}\n\nشار و قارییەکەت پاشەکەوت دەکرێن و دەتوانیت لێرە بیگۆڕیت.",
+        f"⚙️ *ڕێکخستنەکانی من*\n\n🏙 شاری هەڵبژێردراو: {city_label}\n🎙️ قاری: {qari}\n📚 تەفسیر: {tafsir_label}\n📿 ژمارەی تەسبیح: {tasbih_count}\n🔔 ئاگادارکردنەوەی کاتی بانگ: {notify_label}\n\nشار و قاری و تەفسیرەکەت پاشەکەوت دەکرێن و دەتوانیت لێرە بیگۆڕیت.",
         reply_markup=ik([
             [InlineKeyboardButton("🏙 گۆڕینی شار", callback_data="st:city")],
             [InlineKeyboardButton("🎙️ گۆڕینی قاری", callback_data="st:qari:menu")],
+            [InlineKeyboardButton("📚 گۆڕینی تەفسیر", callback_data="st:tafsir")],
             [InlineKeyboardButton(("🔕 ناچالاککردنی ئاگادارکردنەوە" if notifications else "🔔 چالاککردنی ئاگادارکردنەوە"), callback_data=f"st:notify:{notify_action}")],
             [InlineKeyboardButton("⭐ دڵخوازەکان", callback_data="fv:list")],
             [InlineKeyboardButton("📍 دوا خوێندنەوە", callback_data="lr")],
             [InlineKeyboardButton("↕️ ڕێکخستنی شوێنی بەشەکان", callback_data="mo:open")]
         ]), parse_mode=ParseMode.MARKDOWN)
+
+
+async def show_tafsir_settings(update):
+    uid = update.effective_user.id
+    selected = await asyncio.to_thread(get_preferred_tafsir, uid)
+    options = [
+        "تەفسیری ڕێبەر", "تەفسیری ڕامان", "پوختەی تەفسیر", "تەفسیری ئاسان",
+        "تەفسیری سەناهی", "تەفسیری هەژار", "تەفسیری ژین", "تەفسیری مایسەر",
+        "تەفسیری ڕۆشن", "تەفسیری تەوحید",
+    ]
+    buttons = []
+    for index, label in enumerate(options):
+        prefix = "✅ " if index == selected else ""
+        buttons.append([InlineKeyboardButton(prefix + label, callback_data=f"st:tafsir:pick:{index}")])
+    buttons.append([InlineKeyboardButton("🔙 ڕێکخستنەکان", callback_data="st:settings")])
+    await update.callback_query.edit_message_text(
+        "📚 تەفسیری دڵخوازت هەڵبژێرە. ئەم هەڵبژاردنە پاشەکەوت دەکرێت و لە هەموو ئایەتەکاندا بەکاردێت:",
+        reply_markup=ik(buttons)
+    )
 
 
 def city_display_name(city):
@@ -740,15 +767,17 @@ async def show_ayahs(update, sid, offset=0, edit=False):
     name=rows[0][0]
     parts=[f"📖 *{name}*\nئایەتەکان {offset+1} تا {offset+len(rows)}\n"]
     buttons=[]
+    with db("surat.db") as c:
+        total_row=c.execute("SELECT aya FROM surat WHERE soraid=?",(sid,)).fetchone()
+    total=int(total_row[0]) if total_row else len(rows)
+    nav=[]
+    if offset>0: nav.append(InlineKeyboardButton("⬅️ پێشوو",callback_data=f"q:a:{sid}:{max(0,offset-8)}"))
+    if offset+8<total: nav.append(InlineKeyboardButton("دواتر ➡️",callback_data=f"q:a:{sid}:{offset+8}"))
+    if nav: buttons.append(nav)
     for row in rows:
         _,ayah,arabic,*_=row
         parts.append(f"*{ayah}.* {arabic}")
         buttons.append([InlineKeyboardButton(f"📖 تەفسیری ئایەتی {ayah}",callback_data=f"q:t:{sid}:{ayah}"), InlineKeyboardButton("⭐",callback_data=f"fv:add:{sid}:{ayah}")])
-    nav=[]
-    if offset>0: nav.append(InlineKeyboardButton("⬅️ پێشوو",callback_data=f"q:a:{sid}:{max(0,offset-8)}"))
-    with db("surat.db") as c: total=c.execute("SELECT aya FROM surat WHERE soraid=?",(sid,)).fetchone()[0]
-    if offset+8<total: nav.append(InlineKeyboardButton("دواتر ➡️",callback_data=f"q:a:{sid}:{offset+8}"))
-    if nav: buttons.append(nav)
     buttons.append([InlineKeyboardButton("📚 تەفسیری هەموو ئایەتەکان", callback_data=f"q:ts:{sid}")])
     buttons.append([InlineKeyboardButton("🎧 گوێگرتن بە قاریی هەڵبژێردراو", callback_data=f"qaudio:{sid}")])
     buttons.append([InlineKeyboardButton("🔙 لیستی سوڕەتەکان",callback_data="q:s:0")])
@@ -777,6 +806,8 @@ async def show_surah_tafsir(update, sid):
     if not rows:
         return await update.effective_message.reply_text("هیچ تەفسیرێک بۆ ئەم سوڕەتە نەدۆزرایەوە.")
     surah_name = str(rows[0][0] or "").strip()
+    if surah_name.startswith("سوڕەتی "):
+        surah_name = surah_name[len("سوڕەتی "):].strip()
     title = f"📚 تەفسیری هەموو ئایەتەکانی سوڕەتی {surah_name} — {options[selected][0]}"
     await update.effective_message.reply_text(title)
     chunks = []
@@ -840,14 +871,16 @@ async def show_tafsir(update,sid,ayah,selected=None):
         else:
             body = "هیچ تەفسیرێک بۆ ئەم ئایەتە تۆمار نەکراوە."
     text = f"{heading}\n\n{r[1]}\n\n{body}"
-    buttons.append([InlineKeyboardButton("هەموو ١٠ تەفسیر", callback_data=f"q:tf:{sid}:{ayah}:-1")])
-    buttons.extend([[InlineKeyboardButton(label, callback_data=f"q:tf:{sid}:{ayah}:{i}")]
-                    for i, (label, _) in enumerate(options)])
+    buttons.append([
+        InlineKeyboardButton("⬅️ ئایەتی پێشوو", callback_data=f"q:tp:{sid}:{ayah}"),
+        InlineKeyboardButton("ئایەتی داهاتوو ➡️", callback_data=f"q:tn:{sid}:{ayah}"),
+    ])
+    buttons.append([InlineKeyboardButton("📚 گۆڕینی تەفسیر", callback_data="st:tafsir")])
     buttons.append([InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان", callback_data=f"fv:add:{sid}:{ayah}")])
     buttons.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ ئایەتەکان", callback_data=f"q:a:{sid}:{((ayah-1)//8)*8}")])
-    await update.effective_message.reply_text(text[:3900], reply_markup=ik(buttons),
-                                              parse_mode=ParseMode.MARKDOWN,
-                                              disable_web_page_preview=True)
+    await update.callback_query.edit_message_text(text[:3900], reply_markup=ik(buttons),
+                                                  parse_mode=ParseMode.MARKDOWN,
+                                                  disable_web_page_preview=True)
 
 async def prayer_city_list(update, page=0, edit=False, mode="prayer"):
     cities=get_cities(); chunk=cities[page*12:(page+1)*12]
@@ -1957,6 +1990,17 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
     if data == "st:city":
         context.user_data["settings_city_flow"] = True
         return await setup_city_menu(update, 0, True)
+    if data == "st:tafsir":
+        return await show_tafsir_settings(update)
+    if data == "st:settings":
+        return await show_settings(update, context)
+    if data.startswith("st:tafsir:pick:"):
+        selected_tafsir = int(data.split(":")[3])
+        await asyncio.to_thread(set_preferred_tafsir, q.from_user.id, selected_tafsir)
+        return await q.edit_message_text(
+            f"✅ تەفسیرەکەت گۆڕدرا بۆ: {['تەفسیری ڕێبەر','تەفسیری ڕامان','پوختەی تەفسیر','تەفسیری ئاسان','تەفسیری سەناهی','تەفسیری هەژار','تەفسیری ژین','تەفسیری مایسەر','تەفسیری ڕۆشن','تەفسیری تەوحید'][selected_tafsir]}",
+            reply_markup=ik([[InlineKeyboardButton("⚙️ گەڕانەوە بۆ ڕێکخستن", callback_data="st:settings")]])
+        )
     if data.startswith("st:notify:"):
         enabled = data.endswith(":on")
         await asyncio.to_thread(set_prayer_notifications, q.from_user.id, enabled)
@@ -2169,6 +2213,16 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             _,_,sid,off=data.split(":"); return await show_ayahs(update,int(sid),int(off),True)
         if data.startswith("q:t:"):
             _,_,sid,ay=data.split(":"); return await show_tafsir(update,int(sid),int(ay))
+        if data.startswith("q:tp:") or data.startswith("q:tn:"):
+            _, direction, sid, ay = data.split(":")
+            sid, ay = int(sid), int(ay)
+            with db("surat.db") as conn:
+                total_row = conn.execute("SELECT aya FROM surat WHERE soraid=?", (sid,)).fetchone()
+            total = int(total_row[0]) if total_row else ay
+            next_ayah = ay - 1 if direction == "tp" else ay + 1
+            if next_ayah < 1 or next_ayah > total:
+                return await q.answer("ئەمە سنووری سوڕەتەکەیە.", show_alert=True)
+            return await show_tafsir(update, sid, next_ayah)
         if data.startswith("q:ts:"):
             return await show_surah_tafsir(update, int(data.split(":")[2]))
         if data.startswith("q:tf:"):
