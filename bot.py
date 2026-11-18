@@ -515,7 +515,7 @@ async def show_settings(update, context=None):
         reply_markup=ik([
             [InlineKeyboardButton("🏙 گۆڕینی شار", callback_data="st:city")],
             [InlineKeyboardButton("🎙️ گۆڕینی قاری", callback_data="st:qari:menu")],
-            [InlineKeyboardButton("📚 گۆڕینی تەفسیر", callback_data="st:tafsir")],
+            [InlineKeyboardButton("📚 گۆڕینی تەفسیر", callback_data=f"q:tc:{sid}:{ayah}")],
             [InlineKeyboardButton(("🔕 ناچالاککردنی ئاگادارکردنەوە" if notifications else "🔔 چالاککردنی ئاگادارکردنەوە"), callback_data=f"st:notify:{notify_action}")],
             [InlineKeyboardButton("⭐ دڵخوازەکان", callback_data="fv:list")],
             [InlineKeyboardButton("📍 دوا خوێندنەوە", callback_data="lr")],
@@ -1991,12 +1991,20 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
         context.user_data["settings_city_flow"] = True
         return await setup_city_menu(update, 0, True)
     if data == "st:tafsir":
+        context.user_data.pop("tafsir_return_to_ayah", None)
+        return await show_tafsir_settings(update)
+    if data.startswith("q:tc:"):
+        _, _, sid, ayah = data.split(":")
+        context.user_data["tafsir_return_to_ayah"] = (int(sid), int(ayah))
         return await show_tafsir_settings(update)
     if data == "st:settings":
         return await show_settings(update, context)
     if data.startswith("st:tafsir:pick:"):
         selected_tafsir = int(data.split(":")[3])
         await asyncio.to_thread(set_preferred_tafsir, q.from_user.id, selected_tafsir)
+        return_to_ayah = context.user_data.pop("tafsir_return_to_ayah", None)
+        if return_to_ayah:
+            return await show_tafsir(update, return_to_ayah[0], return_to_ayah[1])
         return await q.edit_message_text(
             f"✅ تەفسیرەکەت گۆڕدرا بۆ: {['تەفسیری ڕێبەر','تەفسیری ڕامان','پوختەی تەفسیر','تەفسیری ئاسان','تەفسیری سەناهی','تەفسیری هەژار','تەفسیری ژین','تەفسیری مایسەر','تەفسیری ڕۆشن','تەفسیری تەوحید'][selected_tafsir]}",
             reply_markup=ik([[InlineKeyboardButton("⚙️ گەڕانەوە بۆ ڕێکخستن", callback_data="st:settings")]])
