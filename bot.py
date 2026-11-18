@@ -1456,13 +1456,13 @@ async def play_mushaf_page_audio(update, context, page):
             raise RuntimeError("ffmpeg/ffprobe لە سێرڤەر بەردەست نییە")
         with tempfile.TemporaryDirectory(prefix=f"regay-page-{page}-") as temp_dir:
             clips = []
-            async with LARGE_AUDIO_DOWNLOAD_SEMAPHORE:
-                for number, (sid, first_ayah, last_ayah) in enumerate(groups, 1):
-                    audio_url = f"{base}/{sid:03d}.mp3"
+            for number, (sid, first_ayah, last_ayah) in enumerate(groups, 1):
+                audio_url = f"{base}/{sid:03d}.mp3"
+                async with LARGE_AUDIO_DOWNLOAD_SEMAPHORE:
                     source_path = await asyncio.to_thread(
                         download_cached_file, audio_url, 512 * 1024 * 1024, 120
                     )
-                    source = str(source_path)
+                source = str(source_path)
                     with sqlite3.connect(f"file:{timing_path}?mode=ro", uri=True) as conn:
                         timing_rows = conn.execute(
                             "SELECT ayah,time FROM timings WHERE sura=? ORDER BY ayah",
