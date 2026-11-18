@@ -786,12 +786,12 @@ async def show_surah_tafsir(update, sid):
         if not value:
             value = "تەفسیر بۆ ئەم ئایەتە تۆمار نەکراوە."
         part = f"{ayah_no}. {value}"
-        if current and len("\\n\\n".join(current)) + len(part) + 2 > 3600:
-            chunks.append("\\n\\n".join(current))
+        if current and len("\n\n".join(current)) + len(part) + 2 > 3600:
+            chunks.append("\n\n".join(current))
             current = []
         current.append(part)
     if current:
-        chunks.append("\\n\\n".join(current))
+        chunks.append("\n\n".join(current))
     for chunk in chunks:
         await update.effective_message.reply_text(chunk, disable_web_page_preview=True)
     await update.effective_message.reply_text(
