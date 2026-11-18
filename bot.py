@@ -515,7 +515,7 @@ async def show_settings(update, context=None):
         reply_markup=ik([
             [InlineKeyboardButton("🏙 گۆڕینی شار", callback_data="st:city")],
             [InlineKeyboardButton("🎙️ گۆڕینی قاری", callback_data="st:qari:menu")],
-            [InlineKeyboardButton("📚 گۆڕینی تەفسیر", callback_data=f"q:tc:{sid}:{ayah}")],
+            [InlineKeyboardButton("📚 گۆڕینی تەفسیر", callback_data="st:tafsir") ],
             [InlineKeyboardButton(("🔕 ناچالاککردنی ئاگادارکردنەوە" if notifications else "🔔 چالاککردنی ئاگادارکردنەوە"), callback_data=f"st:notify:{notify_action}")],
             [InlineKeyboardButton("⭐ دڵخوازەکان", callback_data="fv:list")],
             [InlineKeyboardButton("📍 دوا خوێندنەوە", callback_data="lr")],
@@ -875,7 +875,7 @@ async def show_tafsir(update,sid,ayah,selected=None):
         InlineKeyboardButton("⬅️ ئایەتی پێشوو", callback_data=f"q:tp:{sid}:{ayah}"),
         InlineKeyboardButton("ئایەتی داهاتوو ➡️", callback_data=f"q:tn:{sid}:{ayah}"),
     ])
-    buttons.append([InlineKeyboardButton("📚 گۆڕینی تەفسیر", callback_data="st:tafsir")])
+    buttons.append([InlineKeyboardButton("📚 گۆڕینی تەفسیر", callback_data=f"q:tc:{sid}:{ayah}")])
     buttons.append([InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان", callback_data=f"fv:add:{sid}:{ayah}")])
     buttons.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ ئایەتەکان", callback_data=f"q:a:{sid}:{((ayah-1)//8)*8}")])
     await update.callback_query.edit_message_text(text[:3900], reply_markup=ik(buttons),
