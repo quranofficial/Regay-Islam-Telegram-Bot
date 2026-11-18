@@ -740,13 +740,14 @@ async def show_ayat_kursi(update):
     """Open Ayat al-Kursi directly from the original Quran database."""
     with db("regayislam.db") as conn:
         row = conn.execute(
-            "SELECT sura_name_ar,ayah,text FROM ayah_text WHERE suraId=2 AND ayah=255"
+            "SELECT sura_name_ar,ayah,text,asan FROM ayah_text WHERE suraId=2 AND ayah=255"
         ).fetchone()
     if not row:
         return await update.effective_message.reply_text("ئایەتی کورسی لە داتابەیسی قورئاندا نەدۆزرایەوە.")
-    name, ayah, arabic = row
+    name, ayah, arabic, easy_tafsir = row
+    tafsir_block = f"\n\n📚 *تەفسیری ئاسان*\n{easy_tafsir}" if easy_tafsir and str(easy_tafsir).strip() else "\n\n📚 تەفسیری ئاسان بۆ ئەم ئایەتە لە داتابەیسدا بەردەست نییە."
     await update.effective_message.reply_text(
-        f"🕋 *ئایەتی کورسی — {name}، {ayah}*\n\n{arabic}",
+        f"🕋 *ئایەتی کورسی — {name}، {ayah}*\n\n{arabic}{tafsir_block}",
         reply_markup=ik([
             [InlineKeyboardButton("🔊 گوێگرتن بە دەنگی ئایەتی کورسی", callback_data="kursi:audio")],
             [InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان", callback_data="fv:add:2:255")]
@@ -910,12 +911,12 @@ def hijri_date_for(gregorian_date):
         else:
             break
     hd = jd - islamic_jd(hy, hm) + 1
-    months = ["محەڕەم", "سەفەر", "ڕەبیعی یەکەم", "ڕەبیعی دووەم", "جومادای یەکەم", "جومادای دووەم", "ڕەجەب", "شەعبان", "ڕەمەزان", "شەوال", "زولقەعدە", "زولحیججە"]
+    months = ["مُحَرَّم", "صَفَر", "رَبِيع الأَوَّل", "رَبِيع الآخِر", "جُمَادَى الأُولَى", "جُمَادَى الآخِرَة", "رَجَب", "شَعْبَان", "رَمَضَان", "شَوَّال", "ذُو القَعْدَة", "ذُو الحِجَّة"]
     return f"{hd}ی {months[hm-1]} {hy} کۆچی"
 
 
 def dual_date_lines(value):
-    return f"📅 زاینی: {value:%Y-%m-%d}\n🌙 هەجری: {hijri_date_for(value)}"
+    return f"📅 زاینی: {value:%Y-%m-%d}\n🌙 کۆچی: {hijri_date_for(value)}"
 
 
 async def prayer_times(update, city, edit=False):
@@ -933,6 +934,25 @@ async def prayer_times(update, city, edit=False):
         labels=["بەیانی","خۆرهەڵاتن","نیوەڕۆ","عەسر","ئێوارە","عیشا"]
         msg=f"🕌 *کاتەکانی بانگ — {cityname}*\n{dual_date_lines(datetime.now(TZ).date())}\n\n"
         msg+='\n'.join(f"• {a}: *{b}*" for a,b in zip(labels,row[1:]))
+        prayer_slots = [(1, "بەیانی"), (3, "نیوەڕۆ"), (4, "عەسر"), (5, "ئێوارە"), (6, "عیشا")]
+        upcoming = []
+        for column_index, prayer_name in prayer_slots:
+            raw_time = str(row[column_index] or "").strip()[:5]
+            try:
+                clock = datetime.strptime(raw_time, "%H:%M").time()
+                at = datetime.combine(now.date(), clock, tzinfo=TZ)
+                if at <= now:
+                    at += timedelta(days=1)
+                upcoming.append((at, prayer_name, raw_time))
+            except ValueError:
+                continue
+        if upcoming:
+            next_at, next_name, next_time = min(upcoming, key=lambda item: item[0])
+            remaining = max(0, int((next_at - now).total_seconds()))
+            hours, remainder = divmod(remaining, 3600)
+            minutes = remainder // 60
+            wait_text = (f"{hours} کاتژمێر و {minutes} خولەک" if hours else f"{minutes} خولەک")
+            msg += f"\n\n🔔 بانگی داهاتوو: *{next_name} — {next_time}*\n⏳ ماوە: *{wait_text}*"
         msg+="\n\n_کاتەکان وەک خشتەی ناو ئەپی ڕێگای ئیسلامن؛ پێش بەکارهێنان لەگەڵ کاتی مزگەوتی ناوچەکەت بەراوردیان بکە._"
     markup=ik([[InlineKeyboardButton("🔄 گۆڕینی شار",callback_data="pcl:prayer:0")]])
     if edit: await update.callback_query.edit_message_text(msg,reply_markup=markup,parse_mode=ParseMode.MARKDOWN)
@@ -1911,6 +1931,9 @@ async def handle_text(update,context):
             return await update.effective_message.reply_text("⚠️ ناردنی وەڵامەکە سەرکەوتوو نەبوو.")
     if context.user_data.get("feedback_waiting"):
         return await receive_feedback(update, context, text)
+    # Do not let a pending Mushaf page prompt consume another menu selection.
+    if text in MENU_ITEMS.values() and text != "📖 مصحەف":
+        context.user_data.pop("mushaf_waiting_page", None)
     if context.user_data.pop("mushaf_waiting_page", False):
         if not text.isdigit() or not 1 <= int(text) <= 604:
             context.user_data["mushaf_waiting_page"] = True
@@ -2458,7 +2481,7 @@ async def prayer_notification_loop(app):
                             continue
                         await app.bot.send_message(
                             chat_id=uid,
-                            text=f"🕌 ئێستا کاتی بانگی *{prayer_name}* ـە.\n\nخوا نوێژ و دوعاکانتان قبوڵ بکات. 🤲",
+                            text=f"🕌 ئێستا کاتی بانگی *{prayer_name}* ـە ({prayer_hm}).\n\nخوا نوێژ و دوعاکانتان قبوڵ بکات. 🤲",
                             parse_mode=ParseMode.MARKDOWN,
                         )
                     except Exception:
