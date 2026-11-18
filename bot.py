@@ -792,7 +792,9 @@ async def show_surah_tafsir(update, sid):
         current.append(part)
     if current:
         chunks.append("\n\n".join(current))
-    for chunk in chunks:
+    for chunk_index, chunk in enumerate(chunks):
+        if chunk_index:
+            await asyncio.sleep(0.4)
         await update.effective_message.reply_text(chunk, disable_web_page_preview=True)
     await update.effective_message.reply_text(
         f"✅ تەواو بوو — {len(rows)} ئایەت، بە {options[selected][0]}."
@@ -822,22 +824,21 @@ async def show_tafsir(update,sid,ayah,selected=None):
         surah_title = "سوڕەتی " + surah_title
     heading = f"📖 {surah_title}، ئایەتی {ayah}"
     buttons = []
-    if selected is None:
-        available = [(i, label, value) for i, ((label, _), value) in enumerate(zip(options, fields))
-                     if value and str(value).strip()]
-        if available:
-            index, label, value = available[0]
-            body = f"*{label}*\n\n{str(value)[:2600]}"
-        else:
-            body = "هیچ تەفسیرێک بۆ ئەم ئایەتە تۆمار نەکراوە."
-    elif selected == -1:
+    if selected == -1:
         sections = [f"*{label}*\n{str(value)[:850]}" for (label, _), value in zip(options, fields)
                     if value and str(value).strip()]
         body = "\n\n".join(sections) if sections else "هیچ تەفسیرێک بۆ ئەم ئایەتە تۆمار نەکراوە."
     else:
-        label, _ = options[selected]
-        value = fields[selected]
-        body = f"*{label}*\n\n{str(value)[:2600]}" if value and str(value).strip() else f"*{label}*\nئەم تەفسیرە بۆ ئەم ئایەتە بەتاڵە."
+        if not fields[selected] or not str(fields[selected]).strip():
+            available = [(i, label, value) for i, ((label, _), value) in enumerate(zip(options, fields))
+                         if value and str(value).strip()]
+            if available:
+                selected, _, _ = available[0]
+        if fields[selected] and str(fields[selected]).strip():
+            label, _ = options[selected]
+            body = f"*{label}*\n\n{str(fields[selected])[:2600]}"
+        else:
+            body = "هیچ تەفسیرێک بۆ ئەم ئایەتە تۆمار نەکراوە."
     text = f"{heading}\n\n{r[1]}\n\n{body}"
     buttons.append([InlineKeyboardButton("هەموو ١٠ تەفسیر", callback_data=f"q:tf:{sid}:{ayah}:-1")])
     buttons.extend([[InlineKeyboardButton(label, callback_data=f"q:tf:{sid}:{ayah}:{i}")]
