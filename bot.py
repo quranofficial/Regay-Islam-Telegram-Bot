@@ -11,7 +11,7 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.request import HTTPXRequest
 from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from supabase_store import (is_configured, save_user, get_city, set_city, get_qari, set_qari, is_setup_completed, set_setup_completed, save_feedback, touch_runtime_heartbeat, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user, get_tasbih_zikr, set_tasbih_zikr, get_menu_order, set_menu_order)
+from supabase_store import (is_configured, save_user, get_city, set_city, get_qari, set_qari, is_setup_completed, set_setup_completed, save_feedback, touch_runtime_heartbeat, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user, get_tasbih_zikr, set_tasbih_zikr, get_menu_order, set_menu_order, get_preferred_tafsir, set_preferred_tafsir)
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -743,20 +743,69 @@ async def show_ayahs(update, sid, offset=0, edit=False):
     for row in rows:
         _,ayah,arabic,*_=row
         parts.append(f"*{ayah}.* {arabic}")
-        buttons.append([InlineKeyboardButton(f"📖 ڕوونکردنەوەی ئایەتی {ayah}",callback_data=f"q:t:{sid}:{ayah}"), InlineKeyboardButton("⭐",callback_data=f"fv:add:{sid}:{ayah}")])
+        buttons.append([InlineKeyboardButton(f"📖 تەفسیری ئایەتی {ayah}",callback_data=f"q:t:{sid}:{ayah}"), InlineKeyboardButton("⭐",callback_data=f"fv:add:{sid}:{ayah}")])
     nav=[]
     if offset>0: nav.append(InlineKeyboardButton("⬅️ پێشوو",callback_data=f"q:a:{sid}:{max(0,offset-8)}"))
     with db("surat.db") as c: total=c.execute("SELECT aya FROM surat WHERE soraid=?",(sid,)).fetchone()[0]
     if offset+8<total: nav.append(InlineKeyboardButton("دواتر ➡️",callback_data=f"q:a:{sid}:{offset+8}"))
     if nav: buttons.append(nav)
+    buttons.append([InlineKeyboardButton("📚 تەفسیری هەموو ئایەتەکان", callback_data=f"q:ts:{sid}")])
     buttons.append([InlineKeyboardButton("🎧 گوێگرتن بە قاریی هەڵبژێردراو", callback_data=f"qaudio:{sid}")])
     buttons.append([InlineKeyboardButton("🔙 لیستی سوڕەتەکان",callback_data="q:s:0")])
     text="\n\n".join(parts)
     if edit: await update.callback_query.edit_message_text(text,reply_markup=ik(buttons),parse_mode=ParseMode.MARKDOWN)
     else: await update.effective_message.reply_text(text,reply_markup=ik(buttons),parse_mode=ParseMode.MARKDOWN)
 
+async def show_surah_tafsir(update, sid):
+    uid = update.effective_user.id
+    selected = await asyncio.to_thread(get_preferred_tafsir, uid)
+    options = [
+        ("تەفسیری ڕێبەر", "rebar"), ("تەفسیری ڕامان", "raman"),
+        ("پوختەی تەفسیر", "puxta"), ("تەفسیری ئاسان", "asan"),
+        ("تەفسیری سەناهی", "sanahi"), ("تەفسیری هەژار", "hazhar"),
+        ("تەفسیری ژین", "zhin"), ("تەفسیری مایسەر", "maiser"),
+        ("تەفسیری ڕۆشن", "roshn"), ("تەفسیری تەوحید", "tawhid"),
+    ]
+    if not 0 <= selected < len(options):
+        selected = 0
+    column = options[selected][1]
+    with db("regayislam.db") as conn:
+        rows = conn.execute(
+            f"SELECT sura_name_ar, ayah, {column} FROM ayah_text WHERE suraId=? ORDER BY ayah",
+            (sid,)
+        ).fetchall()
+    if not rows:
+        return await update.effective_message.reply_text("هیچ تەفسیرێک بۆ ئەم سوڕەتە نەدۆزرایەوە.")
+    surah_name = str(rows[0][0] or "").strip()
+    title = f"📚 تەفسیری هەموو ئایەتەکانی سوڕەتی {surah_name} — {options[selected][0]}"
+    await update.effective_message.reply_text(title)
+    chunks = []
+    current = []
+    for _, ayah_no, tafsir_text in rows:
+        value = str(tafsir_text or "").strip()
+        if not value:
+            value = "تەفسیر بۆ ئەم ئایەتە تۆمار نەکراوە."
+        part = f"{ayah_no}. {value}"
+        if current and len("\\n\\n".join(current)) + len(part) + 2 > 3600:
+            chunks.append("\\n\\n".join(current))
+            current = []
+        current.append(part)
+    if current:
+        chunks.append("\\n\\n".join(current))
+    for chunk in chunks:
+        await update.effective_message.reply_text(chunk, disable_web_page_preview=True)
+    await update.effective_message.reply_text(
+        f"✅ تەواو بوو — {len(rows)} ئایەت، بە {options[selected][0]}."
+    )
+
+
 async def show_tafsir(update,sid,ayah,selected=None):
-    await asyncio.to_thread(save_last_read, update.effective_user.id, sid, ((ayah-1)//8)*8)
+    uid = update.effective_user.id
+    if selected is None:
+        selected = await asyncio.to_thread(get_preferred_tafsir, uid)
+    elif selected >= 0:
+        await asyncio.to_thread(set_preferred_tafsir, uid, selected)
+    await asyncio.to_thread(save_last_read, uid, sid, ((ayah-1)//8)*8)
     with db("regayislam.db") as c:
         r=c.execute("SELECT sura_name_ar,text,rebar,raman,puxta,asan,sanahi,hazhar,zhin,maiser,roshn,tawhid FROM ayah_text WHERE suraId=? AND ayah=?",(sid,ayah)).fetchone()
     if not r: return await update.callback_query.answer("ئایەت نەدۆزرایەوە",show_alert=True)
@@ -2119,6 +2168,8 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             _,_,sid,off=data.split(":"); return await show_ayahs(update,int(sid),int(off),True)
         if data.startswith("q:t:"):
             _,_,sid,ay=data.split(":"); return await show_tafsir(update,int(sid),int(ay))
+        if data.startswith("q:ts:"):
+            return await show_surah_tafsir(update, int(data.split(":")[2]))
         if data.startswith("q:tf:"):
             _,_,sid,ay,choice=data.split(":"); return await show_tafsir(update,int(sid),int(ay),int(choice))
         if data.startswith("pcl:"):
