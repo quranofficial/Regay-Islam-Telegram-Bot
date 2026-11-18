@@ -1853,7 +1853,7 @@ async def handle_text(update,context):
         "📿 ناوەکانی خودا":lambda:names_menu(update,0),
         "🎙️ قارییەکان":lambda:show_qari_menu(update,0),
         "📚 هەموو بابەتەکان":lambda:content_menu(update),
-        "🎞️ ڤیدیۆی ئاینی":lambda:firebase_video_profiles_menu(update),
+        "🎞️ ڤیدیۆی ئاینی":lambda:firebase_video_profiles_menu(update,context),
         "🔎 گەڕان":lambda:search_choose(update),
         "⭐ دڵخوازەکان":lambda:show_favorites(update),
         "📍 دوا خوێندنەوە":lambda:show_last_read(update),
