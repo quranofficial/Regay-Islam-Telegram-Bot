@@ -40,9 +40,20 @@ class UserSerialUpdateProcessor(BaseUpdateProcessor):
         if user is None:
             await coroutine
             return
-        lock = self._user_locks.setdefault(user.id, asyncio.Lock())
-        async with lock:
-            await coroutine
+        # Keep an entry while it is active or has queued updates, then remove
+        # it so the lock map does not grow for every user ever seen.
+        entry = self._user_locks.get(user.id)
+        if entry is None:
+            entry = [asyncio.Lock(), 0]
+            self._user_locks[user.id] = entry
+        entry[1] += 1
+        try:
+            async with entry[0]:
+                await coroutine
+        finally:
+            entry[1] -= 1
+            if entry[1] == 0 and self._user_locks.get(user.id) is entry:
+                del self._user_locks[user.id]
 
 
 # Protect memory and bandwidth while allowing normal bot updates to run concurrently.
