@@ -1,6 +1,6 @@
 """ڕێگای ئیسلام — Telegram edition, built from the supplied Android app data."""
 from __future__ import annotations
-import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar, hashlib, time, shutil, subprocess, tempfile
+import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar, hashlib, time, shutil, subprocess, tempfile, threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
@@ -147,6 +147,62 @@ def download_remote_bytes(url, max_bytes, timeout):
     if not data or len(data) > max_bytes:
         raise ValueError("Remote file is empty or exceeds the allowed size")
     return data
+
+
+_media_cache_locks = {}
+_media_cache_locks_guard = threading.Lock()
+
+
+def download_cached_file(url, max_bytes, timeout):
+    """Stream media to disk, serialize duplicate downloads, and reuse cached files."""
+    cache_dir = Path("/tmp/regay-islam-media-cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    cache_path = cache_dir / key
+    with _media_cache_locks_guard:
+        lock = _media_cache_locks.setdefault(key, threading.Lock())
+    with lock:
+        if cache_path.is_file():
+            try:
+                size = cache_path.stat().st_size
+                if 0 < size <= max_bytes:
+                    return cache_path
+                cache_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        temp_path = cache_path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        request = urllib.request.Request(url, headers={"User-Agent": "Regay-Islam-Telegram-Bot/1.0"})
+        total = 0
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response, open(temp_path, "wb") as output:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError("Remote file exceeds the allowed size")
+                    output.write(chunk)
+            if total <= 0:
+                raise ValueError("Remote file is empty")
+            os.replace(temp_path, cache_path)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+        try:
+            files = sorted((p for p in cache_dir.iterdir() if p.is_file() and not p.name.endswith(".tmp")),
+                           key=lambda p: p.stat().st_mtime)
+            cache_size = sum(p.stat().st_size for p in files)
+            for old in files:
+                if cache_size <= 512 * 1024 * 1024:
+                    break
+                if old != cache_path:
+                    size = old.stat().st_size
+                    old.unlink(missing_ok=True)
+                    cache_size -= size
+        except OSError:
+            pass
+        return cache_path
 
 
 def download_cached_bytes(url, max_bytes, timeout):
@@ -753,18 +809,18 @@ async def send_ayat_kursi_audio(update, context):
     audio_url = "https://cdn.islamic.network/quran/audio/128/ar.alafasy/262.mp3"
     status = await update.effective_message.reply_text("⏳ دەنگی ئایەتی کورسی دادەبەزێت...\\n📥 وەرگرتنی فایل")
     try:
-        def download():
-            request = urllib.request.Request(audio_url, headers={"User-Agent": "Regay-Islam-Telegram-Bot/1.0"})
-            with urllib.request.urlopen(request, timeout=30) as response:
-                data = response.read(15*1024*1024+1)
-            if not data or len(data) > 15*1024*1024:
-                raise ValueError("Ayat audio file is empty or too large")
-            return data
-        data = await asyncio.to_thread(download)
+        audio_path = await asyncio.to_thread(
+            download_cached_file, audio_url, 15 * 1024 * 1024, 30
+        )
         await status.edit_text("✅ دەنگەکە وەرگیرا.\\n📤 ئێستا بۆ تێلێگرام دەنێردرێت...")
-        audio = io.BytesIO(data)
-        audio.name = "ayat-al-kursi.mp3"
-        await context.bot.send_audio(chat_id=update.effective_chat.id, audio=audio, title="Ayat al-Kursi — Mishary Alafasy", performer="مشاري العفاسي", caption="🕋 ئایەتی کورسی — البقرة ٢:٢٥٥")
+        with open(audio_path, "rb") as audio:
+            await context.bot.send_audio(
+                chat_id=update.effective_chat.id, audio=audio,
+                title="Ayat al-Kursi — Mishary Alafasy",
+                performer="مشاري العفاسي",
+                caption="🕋 ئایەتی کورسی — البقرة ٢:٢٥٥",
+                read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
+            )
         await status.delete()
     except Exception:
         log.exception("Ayat al-Kursi audio delivery failed")
@@ -1062,33 +1118,30 @@ async def send_asset_file(update, context, item):
     )
     downloaded = False
     try:
-        payload = await asyncio.to_thread(
-            download_cached_bytes, url, 50 * 1024 * 1024, 60
+        cached_path = await asyncio.to_thread(
+            download_cached_file, url, 50 * 1024 * 1024, 60
         )
         downloaded = True
         await status.edit_text("📤 فایلەکە ئامادەیە؛ ئێستا بۆ تێلێگرام دەنێردرێت...")
-        stream = io.BytesIO(payload)
-        stream.name = filename
         chat_id = update.effective_chat.id
         try:
-            if suffix in (".mp3", ".m4a", ".wav", ".ogg", ".flac"):
-                await context.bot.send_audio(
-                    chat_id=chat_id, audio=stream, caption=title[:1024], title=title[:64],
-                    read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
-                )
-            elif suffix in (".mp4", ".mov", ".m4v"):
-                await context.bot.send_video(chat_id=chat_id, video=stream, caption=title[:1024], supports_streaming=True)
-            elif suffix in (".jpg", ".jpeg", ".png", ".webp"):
-                await context.bot.send_photo(chat_id=chat_id, photo=stream, caption=title[:1024])
-            else:
-                await context.bot.send_document(chat_id=chat_id, document=stream, caption=title[:1024], filename=filename)
+            with open(cached_path, "rb") as stream:
+                if suffix in (".mp3", ".m4a", ".wav", ".ogg", ".flac"):
+                    await context.bot.send_audio(chat_id=chat_id, audio=stream, caption=title[:1024],
+                        title=title[:64], read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30)
+                elif suffix in (".mp4", ".mov", ".m4v"):
+                    await context.bot.send_video(chat_id=chat_id, video=stream, caption=title[:1024],
+                        supports_streaming=True, read_timeout=180, write_timeout=300)
+                elif suffix in (".jpg", ".jpeg", ".png", ".webp"):
+                    await context.bot.send_photo(chat_id=chat_id, photo=stream, caption=title[:1024])
+                else:
+                    await context.bot.send_document(chat_id=chat_id, document=stream, caption=title[:1024],
+                        filename=filename, read_timeout=180, write_timeout=300)
         except BadRequest as media_error:
-            # Some valid files are rejected by Telegram's media parser; retry as a plain document.
             log.warning("Telegram rejected %s as media; retrying as document: %s", filename, media_error)
-            stream.seek(0)
-            await context.bot.send_document(
-                chat_id=chat_id, document=stream, caption=title[:1024], filename=filename
-            )
+            with open(cached_path, "rb") as stream:
+                await context.bot.send_document(chat_id=chat_id, document=stream, caption=title[:1024],
+                    filename=filename, read_timeout=180, write_timeout=300)
         try:
             await status.delete()
         except Exception:
@@ -1274,29 +1327,19 @@ async def play_qari_surah(update,context,index,sid):
     try:
         # Several users may request audio at once; cap only heavyweight downloads.
         async with LARGE_AUDIO_DOWNLOAD_SEMAPHORE:
-            audio_data = await asyncio.to_thread(
-                download_cached_bytes, audio_url, 512 * 1024 * 1024, 120
-            )
+            audio_path = await asyncio.to_thread(\n                download_cached_file, audio_url, 512 * 1024 * 1024, 120\n            )
         await status.edit_text("📤 دەنگەکە وەرگیرا؛ ئامادەی ناردنە...")
         chat_id = update.effective_chat.id
         title = f"{surah_name} — {qari_name}"[:64]
         caption = f"📖 سوڕەتی {surah_name}\n🎙️ قاری: {qari_name}"
         max_part_bytes = 40 * 1024 * 1024
-        if len(audio_data) <= max_part_bytes:
-            audio_file = io.BytesIO(audio_data)
-            audio_file.name = f"{sid:03d}.mp3"
-            await context.bot.send_audio(
-                chat_id=chat_id, audio=audio_file, title=title,
-                performer=qari_name[:64], caption=caption,
-                read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
-            )
+        audio_size = os.path.getsize(audio_path)\n        if audio_size <= max_part_bytes:
+            with open(audio_path, "rb") as audio_file:\n                await context.bot.send_audio(\n                    chat_id=chat_id, audio=audio_file, title=title,\n                    performer=qari_name[:64], caption=caption,\n                    read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,\n                )
         else:
             if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
                 raise RuntimeError("ffmpeg/ffprobe is unavailable for splitting large MP3")
             with tempfile.TemporaryDirectory(prefix="regay-audio-") as temp_dir:
-                source = os.path.join(temp_dir, f"{sid:03d}-full.mp3")
-                with open(source, "wb") as source_file:
-                    source_file.write(audio_data)
+                source = str(audio_path)
                 probe = subprocess.run(
                     ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                      "-of", "default=noprint_wrappers=1:nokey=1", source],
@@ -1307,7 +1350,7 @@ async def play_qari_surah(update,context,index,sid):
                     raise RuntimeError("FFprobe returned an invalid audio duration")
                 pattern = os.path.join(temp_dir, "part-%03d.mp3")
                 safe_part_bytes = 24 * 1024 * 1024
-                segment_seconds = max(30, int(duration * safe_part_bytes * 0.80 / len(audio_data)))
+                segment_seconds = max(30, int(duration * safe_part_bytes * 0.80 / audio_size))
                 parts = []
                 split_errors = []
                 # Stream-copy first; if a cut is too large or only one part is made,
@@ -1439,12 +1482,10 @@ async def play_mushaf_page_audio(update, context, page):
             async with LARGE_AUDIO_DOWNLOAD_SEMAPHORE:
                 for number, (sid, first_ayah, last_ayah) in enumerate(groups, 1):
                     audio_url = f"{base}/{sid:03d}.mp3"
-                    audio_data = await asyncio.to_thread(
-                        download_cached_bytes, audio_url, 512 * 1024 * 1024, 120
+                    source_path = await asyncio.to_thread(
+                        download_cached_file, audio_url, 512 * 1024 * 1024, 120
                     )
-                    source = os.path.join(temp_dir, f"surah-{sid:03d}.mp3")
-                    with open(source, "wb") as fp:
-                        fp.write(audio_data)
+                    source = str(source_path)
                     with sqlite3.connect(f"file:{timing_path}?mode=ro", uri=True) as conn:
                         timing_rows = conn.execute(
                             "SELECT ayah,time FROM timings WHERE sura=? ORDER BY ayah",
