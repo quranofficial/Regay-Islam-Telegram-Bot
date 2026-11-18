@@ -1,6 +1,6 @@
 """ڕێگای ئیسلام — Telegram edition, built from the supplied Android app data."""
 from __future__ import annotations
-import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar, hashlib, time, shutil, subprocess, tempfile, threading
+import os, json, math, sqlite3, logging, asyncio, io, urllib.request, calendar, hashlib, time, shutil, subprocess, tempfile
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
@@ -10,8 +10,8 @@ from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardB
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.request import HTTPXRequest
-from telegram.ext import Application, ApplicationHandlerStop, BaseUpdateProcessor, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from supabase_store import (is_configured, save_user, get_city, set_city, get_qari, set_qari, is_setup_completed, set_setup_completed, save_feedback, touch_runtime_heartbeat, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user, get_tasbih_zikr, set_tasbih_zikr, get_menu_order, set_menu_order, get_preferred_tafsir, set_preferred_tafsir)
+from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from supabase_store import (is_configured, save_user, get_city, set_city, get_qari, set_qari, is_setup_completed, set_setup_completed, save_feedback, touch_runtime_heartbeat, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user, get_tasbih_zikr, set_tasbih_zikr, get_menu_order, set_menu_order)
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -20,41 +20,6 @@ TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("regay_islam")
-
-# Process each user's updates in order while keeping different users concurrent.
-class UserSerialUpdateProcessor(BaseUpdateProcessor):
-    def __init__(self, max_concurrent_updates=64):
-        super().__init__(max_concurrent_updates)
-        self._user_locks = {}
-
-    async def initialize(self):
-        """Initialize the update processor."""
-        return None
-
-    async def shutdown(self):
-        """Release per-user locks when the application shuts down."""
-        self._user_locks.clear()
-
-    async def do_process_update(self, update, coroutine):
-        user = update.effective_user
-        if user is None:
-            await coroutine
-            return
-        # Keep an entry while it is active or has queued updates, then remove
-        # it so the lock map does not grow for every user ever seen.
-        entry = self._user_locks.get(user.id)
-        if entry is None:
-            entry = [asyncio.Lock(), 0]
-            self._user_locks[user.id] = entry
-        entry[1] += 1
-        try:
-            async with entry[0]:
-                await coroutine
-        finally:
-            entry[1] -= 1
-            if entry[1] == 0 and self._user_locks.get(user.id) is entry:
-                del self._user_locks[user.id]
-
 
 # Protect memory and bandwidth while allowing normal bot updates to run concurrently.
 LARGE_AUDIO_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
@@ -149,65 +114,40 @@ def download_remote_bytes(url, max_bytes, timeout):
     return data
 
 
-_media_cache_locks = {}
-_media_cache_locks_guard = threading.Lock()
-
-
-def download_cached_file(url, max_bytes, timeout):
-    """Stream media to disk, serialize duplicate downloads, and reuse cached files."""
+def download_cached_bytes(url, max_bytes, timeout):
+    """Reuse recently downloaded media during this bot process to avoid repeated waits."""
     cache_dir = Path("/tmp/regay-islam-media-cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    key = hashlib.sha256(url.encode("utf-8")).hexdigest()
-    cache_path = cache_dir / key
-    with _media_cache_locks_guard:
-        lock = _media_cache_locks.setdefault(key, threading.Lock())
-    with lock:
-        if cache_path.is_file():
-            try:
-                size = cache_path.stat().st_size
-                if 0 < size <= max_bytes:
-                    return cache_path
-                cache_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-        temp_path = cache_path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
-        request = urllib.request.Request(url, headers={"User-Agent": "Regay-Islam-Telegram-Bot/1.0"})
-        total = 0
+    cache_path = cache_dir / hashlib.sha256(url.encode("utf-8")).hexdigest()
+    if cache_path.is_file():
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response, open(temp_path, "wb") as output:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > max_bytes:
-                        raise ValueError("Remote file exceeds the allowed size")
-                    output.write(chunk)
-            if total <= 0:
-                raise ValueError("Remote file is empty")
-            os.replace(temp_path, cache_path)
-        except Exception:
-            temp_path.unlink(missing_ok=True)
-            raise
-        try:
-            files = sorted((p for p in cache_dir.iterdir() if p.is_file() and not p.name.endswith(".tmp")),
-                           key=lambda p: p.stat().st_mtime)
-            cache_size = sum(p.stat().st_size for p in files)
-            for old in files:
-                if cache_size <= 512 * 1024 * 1024:
-                    break
-                if old != cache_path:
-                    size = old.stat().st_size
-                    old.unlink(missing_ok=True)
-                    cache_size -= size
+            cached = cache_path.read_bytes()
+            if cached and len(cached) <= max_bytes:
+                return cached
+            cache_path.unlink(missing_ok=True)
         except OSError:
             pass
-        return cache_path
-
-
-def download_cached_bytes(url, max_bytes, timeout):
-    """Compatibility wrapper for callers that still need bytes in memory."""
-    return download_cached_file(url, max_bytes, timeout).read_bytes()
+    data = download_remote_bytes(url, max_bytes, timeout)
+    temp_path = cache_path.with_suffix(f".{os.getpid()}.tmp")
+    try:
+        temp_path.write_bytes(data)
+        os.replace(temp_path, cache_path)
+        # Bound cache size so repeated media requests cannot fill the runner disk.
+        files = sorted(
+            (p for p in cache_dir.iterdir() if p.is_file() and not p.name.endswith(".tmp")),
+            key=lambda p: p.stat().st_mtime
+        )
+        total = sum(p.stat().st_size for p in files)
+        for old in files:
+            if total <= 256 * 1024 * 1024:
+                break
+            if old != cache_path:
+                size = old.stat().st_size
+                old.unlink(missing_ok=True)
+                total -= size
+    except OSError:
+        temp_path.unlink(missing_ok=True)
+    return data
 
 
 _firebase_cache = {}
@@ -552,17 +492,10 @@ async def show_menu_order(update, edit=False):
 
 async def show_settings(update, context=None):
     uid = update.effective_user.id
-    city, qari_id, zikr_index, notifications, tafsir_index = await asyncio.gather(
+    city, qari_id, zikr_index, notifications = await asyncio.gather(
         asyncio.to_thread(get_city, uid), asyncio.to_thread(get_qari, uid),
         asyncio.to_thread(get_tasbih_zikr, uid), asyncio.to_thread(get_prayer_notifications, uid),
-        asyncio.to_thread(get_preferred_tafsir, uid),
     )
-    tafsir_options = [
-        "تەفسیری ڕێبەر", "تەفسیری ڕامان", "پوختەی تەفسیر", "تەفسیری ئاسان",
-        "تەفسیری سەناهی", "تەفسیری هەژار", "تەفسیری ژین", "تەفسیری مایسەر",
-        "تەفسیری ڕۆشن", "تەفسیری تەوحید",
-    ]
-    tafsir_label = tafsir_options[tafsir_index] if 0 <= tafsir_index < len(tafsir_options) else tafsir_options[0]
     city_label = city_display_name(city) if city else "دیاری نەکراوە"
     qari = next((r.get("name_ar", "نەزانراو") for r in load_json("dangakan")
                  if isinstance(r, dict) and str(r.get("id")) == str(qari_id)), "هەڵنەبژێردراو")
@@ -571,35 +504,15 @@ async def show_settings(update, context=None):
     notify_label = "🟢 چالاکە" if notifications else "🔴 ناچالاکە"
     notify_action = "off" if notifications else "on"
     await update.effective_message.reply_text(
-        f"⚙️ *ڕێکخستنەکانی من*\n\n🏙 شاری هەڵبژێردراو: {city_label}\n🎙️ قاری: {qari}\n📚 تەفسیر: {tafsir_label}\n📿 ژمارەی تەسبیح: {tasbih_count}\n🔔 ئاگادارکردنەوەی کاتی بانگ: {notify_label}\n\nشار و قاری و تەفسیرەکەت پاشەکەوت دەکرێن و دەتوانیت لێرە بیگۆڕیت.",
+        f"⚙️ *ڕێکخستنەکانی من*\n\n🏙 شاری هەڵبژێردراو: {city_label}\n🎙️ قاری: {qari}\n📿 ژمارەی تەسبیح: {tasbih_count}\n🔔 ئاگادارکردنەوەی کاتی بانگ: {notify_label}\n\nشار و قارییەکەت پاشەکەوت دەکرێن و دەتوانیت لێرە بیگۆڕیت.",
         reply_markup=ik([
             [InlineKeyboardButton("🏙 گۆڕینی شار", callback_data="st:city")],
             [InlineKeyboardButton("🎙️ گۆڕینی قاری", callback_data="st:qari:menu")],
-            [InlineKeyboardButton("📚 گۆڕینی تەفسیر", callback_data="st:tafsir") ],
             [InlineKeyboardButton(("🔕 ناچالاککردنی ئاگادارکردنەوە" if notifications else "🔔 چالاککردنی ئاگادارکردنەوە"), callback_data=f"st:notify:{notify_action}")],
             [InlineKeyboardButton("⭐ دڵخوازەکان", callback_data="fv:list")],
             [InlineKeyboardButton("📍 دوا خوێندنەوە", callback_data="lr")],
             [InlineKeyboardButton("↕️ ڕێکخستنی شوێنی بەشەکان", callback_data="mo:open")]
         ]), parse_mode=ParseMode.MARKDOWN)
-
-
-async def show_tafsir_settings(update):
-    uid = update.effective_user.id
-    selected = await asyncio.to_thread(get_preferred_tafsir, uid)
-    options = [
-        "تەفسیری ڕێبەر", "تەفسیری ڕامان", "پوختەی تەفسیر", "تەفسیری ئاسان",
-        "تەفسیری سەناهی", "تەفسیری هەژار", "تەفسیری ژین", "تەفسیری مایسەر",
-        "تەفسیری ڕۆشن", "تەفسیری تەوحید",
-    ]
-    buttons = []
-    for index, label in enumerate(options):
-        prefix = "✅ " if index == selected else ""
-        buttons.append([InlineKeyboardButton(prefix + label, callback_data=f"st:tafsir:pick:{index}")])
-    buttons.append([InlineKeyboardButton("🔙 ڕێکخستنەکان", callback_data="st:settings")])
-    await update.callback_query.edit_message_text(
-        "📚 تەفسیری دڵخوازت هەڵبژێرە. ئەم هەڵبژاردنە پاشەکەوت دەکرێت و لە هەموو ئایەتەکاندا بەکاردێت:",
-        reply_markup=ik(buttons)
-    )
 
 
 def city_display_name(city):
@@ -733,10 +646,7 @@ async def show_quran_page(update, page=1, edit=False):
         buttons.append(nav)
     if rows:
         await asyncio.to_thread(save_last_read, update.effective_user.id, rows[0], max(0, int(rows[1]) - 1))
-        buttons.append([
-            InlineKeyboardButton("🎧 دەنگی ئەم پەڕەیە", callback_data=f"qpa:{page}"),
-            InlineKeyboardButton("📖 دەنگی تەواوی سووڕەت", callback_data=f"qaudio:{rows[0]}"),
-        ])
+        buttons.append([InlineKeyboardButton("🎧 گوێگرتن بە قاریی هەڵبژێردراو", callback_data=f"qaudio:{rows[0]}")])
     buttons.append([InlineKeyboardButton("📚 لیستی سووڕەتەکان", callback_data="ms:list:0")])
     markup = ik(buttons)
 
@@ -778,18 +688,18 @@ async def send_ayat_kursi_audio(update, context):
     audio_url = "https://cdn.islamic.network/quran/audio/128/ar.alafasy/262.mp3"
     status = await update.effective_message.reply_text("⏳ دەنگی ئایەتی کورسی دادەبەزێت...\\n📥 وەرگرتنی فایل")
     try:
-        audio_path = await asyncio.to_thread(
-            download_cached_file, audio_url, 15 * 1024 * 1024, 30
-        )
+        def download():
+            request = urllib.request.Request(audio_url, headers={"User-Agent": "Regay-Islam-Telegram-Bot/1.0"})
+            with urllib.request.urlopen(request, timeout=30) as response:
+                data = response.read(15*1024*1024+1)
+            if not data or len(data) > 15*1024*1024:
+                raise ValueError("Ayat audio file is empty or too large")
+            return data
+        data = await asyncio.to_thread(download)
         await status.edit_text("✅ دەنگەکە وەرگیرا.\\n📤 ئێستا بۆ تێلێگرام دەنێردرێت...")
-        with open(audio_path, "rb") as audio:
-            await context.bot.send_audio(
-                chat_id=update.effective_chat.id, audio=audio,
-                title="Ayat al-Kursi — Mishary Alafasy",
-                performer="مشاري العفاسي",
-                caption="🕋 ئایەتی کورسی — البقرة ٢:٢٥٥",
-                read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
-            )
+        audio = io.BytesIO(data)
+        audio.name = "ayat-al-kursi.mp3"
+        await context.bot.send_audio(chat_id=update.effective_chat.id, audio=audio, title="Ayat al-Kursi — Mishary Alafasy", performer="مشاري العفاسي", caption="🕋 ئایەتی کورسی — البقرة ٢:٢٥٥")
         await status.delete()
     except Exception:
         log.exception("Ayat al-Kursi audio delivery failed")
@@ -803,14 +713,13 @@ async def show_ayat_kursi(update):
     """Open Ayat al-Kursi directly from the original Quran database."""
     with db("regayislam.db") as conn:
         row = conn.execute(
-            "SELECT sura_name_ar,ayah,text,asan FROM ayah_text WHERE suraId=2 AND ayah=255"
+            "SELECT sura_name_ar,ayah,text FROM ayah_text WHERE suraId=2 AND ayah=255"
         ).fetchone()
     if not row:
         return await update.effective_message.reply_text("ئایەتی کورسی لە داتابەیسی قورئاندا نەدۆزرایەوە.")
-    name, ayah, arabic, easy_tafsir = row
-    tafsir_block = f"\n\n📚 *تەفسیری ئاسان*\n{easy_tafsir}" if easy_tafsir and str(easy_tafsir).strip() else "\n\n📚 تەفسیری ئاسان بۆ ئەم ئایەتە لە داتابەیسدا بەردەست نییە."
+    name, ayah, arabic = row
     await update.effective_message.reply_text(
-        f"🕋 *ئایەتی کورسی — {name}، {ayah}*\n\n{arabic}{tafsir_block}",
+        f"🕋 *ئایەتی کورسی — {name}، {ayah}*\n\n{arabic}",
         reply_markup=ik([
             [InlineKeyboardButton("🔊 گوێگرتن بە دەنگی ئایەتی کورسی", callback_data="kursi:audio")],
             [InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان", callback_data="fv:add:2:255")]
@@ -831,78 +740,23 @@ async def show_ayahs(update, sid, offset=0, edit=False):
     name=rows[0][0]
     parts=[f"📖 *{name}*\nئایەتەکان {offset+1} تا {offset+len(rows)}\n"]
     buttons=[]
-    with db("surat.db") as c:
-        total_row=c.execute("SELECT aya FROM surat WHERE soraid=?",(sid,)).fetchone()
-    total=int(total_row[0]) if total_row else len(rows)
-    nav=[]
-    if offset>0: nav.append(InlineKeyboardButton("⬅️ پێشوو",callback_data=f"q:a:{sid}:{max(0,offset-8)}"))
-    if offset+8<total: nav.append(InlineKeyboardButton("دواتر ➡️",callback_data=f"q:a:{sid}:{offset+8}"))
-    if nav: buttons.append(nav)
     for row in rows:
         _,ayah,arabic,*_=row
         parts.append(f"*{ayah}.* {arabic}")
-        buttons.append([InlineKeyboardButton(f"📖 تەفسیری ئایەتی {ayah}",callback_data=f"q:t:{sid}:{ayah}"), InlineKeyboardButton("⭐",callback_data=f"fv:add:{sid}:{ayah}")])
-    buttons.append([InlineKeyboardButton("📚 تەفسیری هەموو ئایەتەکان", callback_data=f"q:ts:{sid}")])
+        buttons.append([InlineKeyboardButton(f"📖 ڕوونکردنەوەی ئایەتی {ayah}",callback_data=f"q:t:{sid}:{ayah}"), InlineKeyboardButton("⭐",callback_data=f"fv:add:{sid}:{ayah}")])
+    nav=[]
+    if offset>0: nav.append(InlineKeyboardButton("⬅️ پێشوو",callback_data=f"q:a:{sid}:{max(0,offset-8)}"))
+    with db("surat.db") as c: total=c.execute("SELECT aya FROM surat WHERE soraid=?",(sid,)).fetchone()[0]
+    if offset+8<total: nav.append(InlineKeyboardButton("دواتر ➡️",callback_data=f"q:a:{sid}:{offset+8}"))
+    if nav: buttons.append(nav)
     buttons.append([InlineKeyboardButton("🎧 گوێگرتن بە قاریی هەڵبژێردراو", callback_data=f"qaudio:{sid}")])
     buttons.append([InlineKeyboardButton("🔙 لیستی سوڕەتەکان",callback_data="q:s:0")])
     text="\n\n".join(parts)
     if edit: await update.callback_query.edit_message_text(text,reply_markup=ik(buttons),parse_mode=ParseMode.MARKDOWN)
     else: await update.effective_message.reply_text(text,reply_markup=ik(buttons),parse_mode=ParseMode.MARKDOWN)
 
-async def show_surah_tafsir(update, sid):
-    uid = update.effective_user.id
-    selected = await asyncio.to_thread(get_preferred_tafsir, uid)
-    options = [
-        ("تەفسیری ڕێبەر", "rebar"), ("تەفسیری ڕامان", "raman"),
-        ("پوختەی تەفسیر", "puxta"), ("تەفسیری ئاسان", "asan"),
-        ("تەفسیری سەناهی", "sanahi"), ("تەفسیری هەژار", "hazhar"),
-        ("تەفسیری ژین", "zhin"), ("تەفسیری مایسەر", "maiser"),
-        ("تەفسیری ڕۆشن", "roshn"), ("تەفسیری تەوحید", "tawhid"),
-    ]
-    if not 0 <= selected < len(options):
-        selected = 0
-    column = options[selected][1]
-    with db("regayislam.db") as conn:
-        rows = conn.execute(
-            f"SELECT sura_name_ar, ayah, {column} FROM ayah_text WHERE suraId=? ORDER BY ayah",
-            (sid,)
-        ).fetchall()
-    if not rows:
-        return await update.effective_message.reply_text("هیچ تەفسیرێک بۆ ئەم سوڕەتە نەدۆزرایەوە.")
-    surah_name = str(rows[0][0] or "").strip()
-    if surah_name.startswith("سوڕەتی "):
-        surah_name = surah_name[len("سوڕەتی "):].strip()
-    title = f"📚 تەفسیری هەموو ئایەتەکانی سوڕەتی {surah_name} — {options[selected][0]}"
-    await update.effective_message.reply_text(title)
-    chunks = []
-    current = []
-    for _, ayah_no, tafsir_text in rows:
-        value = str(tafsir_text or "").strip()
-        if not value:
-            value = "تەفسیر بۆ ئەم ئایەتە تۆمار نەکراوە."
-        part = f"{ayah_no}. {value}"
-        if current and len("\n\n".join(current)) + len(part) + 2 > 3600:
-            chunks.append("\n\n".join(current))
-            current = []
-        current.append(part)
-    if current:
-        chunks.append("\n\n".join(current))
-    for chunk_index, chunk in enumerate(chunks):
-        if chunk_index:
-            await asyncio.sleep(0.4)
-        await update.effective_message.reply_text(chunk, disable_web_page_preview=True)
-    await update.effective_message.reply_text(
-        f"✅ تەواو بوو — {len(rows)} ئایەت، بە {options[selected][0]}."
-    )
-
-
 async def show_tafsir(update,sid,ayah,selected=None):
-    uid = update.effective_user.id
-    if selected is None:
-        selected = await asyncio.to_thread(get_preferred_tafsir, uid)
-    elif selected >= 0:
-        await asyncio.to_thread(set_preferred_tafsir, uid, selected)
-    await asyncio.to_thread(save_last_read, uid, sid, ((ayah-1)//8)*8)
+    await asyncio.to_thread(save_last_read, update.effective_user.id, sid, ((ayah-1)//8)*8)
     with db("regayislam.db") as c:
         r=c.execute("SELECT sura_name_ar,text,rebar,raman,puxta,asan,sanahi,hazhar,zhin,maiser,roshn,tawhid FROM ayah_text WHERE suraId=? AND ayah=?",(sid,ayah)).fetchone()
     if not r: return await update.callback_query.answer("ئایەت نەدۆزرایەوە",show_alert=True)
@@ -915,37 +769,35 @@ async def show_tafsir(update,sid,ayah,selected=None):
     ]
     fields = r[2:]
     surah_title = str(r[0] or "").strip()
-    # Database names may already include the Sorani prefix more than once.
-    while surah_title.startswith("سوڕەتی"):
-        surah_title = surah_title[len("سوڕەتی"):].lstrip(" :،ـ-")
-    heading = f"📖 سوڕەتی {surah_title}، ئایەتی {eastern_digits(ayah)}"
+    if not surah_title.startswith("سوڕەتی "):
+        surah_title = "سوڕەتی " + surah_title
+    heading = f"📖 {surah_title}، ئایەتی {ayah}"
     buttons = []
-    if selected == -1:
+    if selected is None:
+        available = [(i, label, value) for i, ((label, _), value) in enumerate(zip(options, fields))
+                     if value and str(value).strip()]
+        if available:
+            index, label, value = available[0]
+            body = f"*{label}*\n\n{str(value)[:2600]}"
+        else:
+            body = "هیچ تەفسیرێک بۆ ئەم ئایەتە تۆمار نەکراوە."
+    elif selected == -1:
         sections = [f"*{label}*\n{str(value)[:850]}" for (label, _), value in zip(options, fields)
                     if value and str(value).strip()]
         body = "\n\n".join(sections) if sections else "هیچ تەفسیرێک بۆ ئەم ئایەتە تۆمار نەکراوە."
     else:
-        if not fields[selected] or not str(fields[selected]).strip():
-            available = [(i, label, value) for i, ((label, _), value) in enumerate(zip(options, fields))
-                         if value and str(value).strip()]
-            if available:
-                selected, _, _ = available[0]
-        if fields[selected] and str(fields[selected]).strip():
-            label, _ = options[selected]
-            body = f"*{label}*\n\n{str(fields[selected])[:2600]}"
-        else:
-            body = "هیچ تەفسیرێک بۆ ئەم ئایەتە تۆمار نەکراوە."
+        label, _ = options[selected]
+        value = fields[selected]
+        body = f"*{label}*\n\n{str(value)[:2600]}" if value and str(value).strip() else f"*{label}*\nئەم تەفسیرە بۆ ئەم ئایەتە بەتاڵە."
     text = f"{heading}\n\n{r[1]}\n\n{body}"
-    buttons.append([
-        InlineKeyboardButton("⬅️ ئایەتی پێشوو", callback_data=f"q:tp:{sid}:{ayah}"),
-        InlineKeyboardButton("ئایەتی داهاتوو ➡️", callback_data=f"q:tn:{sid}:{ayah}"),
-    ])
-    buttons.append([InlineKeyboardButton("📚 گۆڕینی تەفسیر", callback_data=f"q:tc:{sid}:{ayah}")])
+    buttons.append([InlineKeyboardButton("هەموو ١٠ تەفسیر", callback_data=f"q:tf:{sid}:{ayah}:-1")])
+    buttons.extend([[InlineKeyboardButton(label, callback_data=f"q:tf:{sid}:{ayah}:{i}")]
+                    for i, (label, _) in enumerate(options)])
     buttons.append([InlineKeyboardButton("⭐ زیادکردن بۆ دڵخوازەکان", callback_data=f"fv:add:{sid}:{ayah}")])
     buttons.append([InlineKeyboardButton("🔙 گەڕانەوە بۆ ئایەتەکان", callback_data=f"q:a:{sid}:{((ayah-1)//8)*8}")])
-    await update.callback_query.edit_message_text(text[:3900], reply_markup=ik(buttons),
-                                                  parse_mode=ParseMode.MARKDOWN,
-                                                  disable_web_page_preview=True)
+    await update.effective_message.reply_text(text[:3900], reply_markup=ik(buttons),
+                                              parse_mode=ParseMode.MARKDOWN,
+                                              disable_web_page_preview=True)
 
 async def prayer_city_list(update, page=0, edit=False, mode="prayer"):
     cities=get_cities(); chunk=cities[page*12:(page+1)*12]
@@ -975,12 +827,12 @@ def hijri_date_for(gregorian_date):
         else:
             break
     hd = jd - islamic_jd(hy, hm) + 1
-    months = ["مُحَرَّم", "صَفَر", "رَبِيع الأَوَّل", "رَبِيع الآخِر", "جُمَادَى الأُولَى", "جُمَادَى الآخِرَة", "رَجَب", "شَعْبَان", "رَمَضَان", "شَوَّال", "ذُو القَعْدَة", "ذُو الحِجَّة"]
+    months = ["محەڕەم", "سەفەر", "ڕەبیعی یەکەم", "ڕەبیعی دووەم", "جومادای یەکەم", "جومادای دووەم", "ڕەجەب", "شەعبان", "ڕەمەزان", "شەوال", "زولقەعدە", "زولحیججە"]
     return f"{hd}ی {months[hm-1]} {hy} کۆچی"
 
 
 def dual_date_lines(value):
-    return f"📅 زاینی: {value:%Y-%m-%d}\n🌙 کۆچی: {hijri_date_for(value)}"
+    return f"📅 زاینی: {value:%Y-%m-%d}\n🌙 هەجری: {hijri_date_for(value)}"
 
 
 async def prayer_times(update, city, edit=False):
@@ -989,8 +841,7 @@ async def prayer_times(update, city, edit=False):
         r=c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name=?",(city,)).fetchone()
         if not r:
             await update.effective_message.reply_text("کاتی بانگ بۆ ئەم شارە لە داتابەیسدا نییە."); return
-        now = datetime.now(TZ)
-        today=now.strftime("%m-%d")
+        today=datetime.now(TZ).strftime("%m-%d")
         row=c.execute(f'SELECT D,bayani,xorhalatn,niwaro,asr,eywara,esha FROM "{city}" WHERE D=?',(today,)).fetchone()
         cityname=city_display
     if not row:
@@ -999,25 +850,6 @@ async def prayer_times(update, city, edit=False):
         labels=["بەیانی","خۆرهەڵاتن","نیوەڕۆ","عەسر","ئێوارە","عیشا"]
         msg=f"🕌 *کاتەکانی بانگ — {cityname}*\n{dual_date_lines(datetime.now(TZ).date())}\n\n"
         msg+='\n'.join(f"• {a}: *{b}*" for a,b in zip(labels,row[1:]))
-        prayer_slots = [(1, "بەیانی"), (3, "نیوەڕۆ"), (4, "عەسر"), (5, "ئێوارە"), (6, "عیشا")]
-        upcoming = []
-        for column_index, prayer_name in prayer_slots:
-            raw_time = str(row[column_index] or "").strip()[:5]
-            try:
-                clock = datetime.strptime(raw_time, "%H:%M").time()
-                at = datetime.combine(now.date(), clock, tzinfo=TZ)
-                if at <= now:
-                    at += timedelta(days=1)
-                upcoming.append((at, prayer_name, raw_time))
-            except ValueError:
-                continue
-        if upcoming:
-            next_at, next_name, next_time = min(upcoming, key=lambda item: item[0])
-            remaining = max(0, int((next_at - now).total_seconds()))
-            hours, remainder = divmod(remaining, 3600)
-            minutes = remainder // 60
-            wait_text = (f"{hours} کاتژمێر و {minutes} خولەک" if hours else f"{minutes} خولەک")
-            msg += f"\n\n🔔 بانگی داهاتوو: *{next_name} — {next_time}*\n⏳ ماوە: *{wait_text}*"
         msg+="\n\n_کاتەکان وەک خشتەی ناو ئەپی ڕێگای ئیسلامن؛ پێش بەکارهێنان لەگەڵ کاتی مزگەوتی ناوچەکەت بەراوردیان بکە._"
     markup=ik([[InlineKeyboardButton("🔄 گۆڕینی شار",callback_data="pcl:prayer:0")]])
     if edit: await update.callback_query.edit_message_text(msg,reply_markup=markup,parse_mode=ParseMode.MARKDOWN)
@@ -1051,7 +883,7 @@ async def monthly_prayer_times(update, city=None, month=None, edit=False):
     by_day = {int(str(row[0]).split("-")[1]): row[1:] for row in rows}
     lines = [
         f"🗓 *کاتەکانی بانگی مانگانە — {city_display}*",
-        f"📅 زاینی: {month_date:%Y-%m} — کۆچی: {hijri_date_for(month_date)}",
+        f"📅 زاینی: {month_date:%Y-%m} — هەجری: {hijri_date_for(month_date)}",
         "",
         "ڕۆژ | بەیانی | خۆرهەڵاتن | نیوەڕۆ | عەسر | ئێوارە | عیشا",
     ]
@@ -1087,30 +919,33 @@ async def send_asset_file(update, context, item):
     )
     downloaded = False
     try:
-        cached_path = await asyncio.to_thread(
-            download_cached_file, url, 50 * 1024 * 1024, 60
+        payload = await asyncio.to_thread(
+            download_cached_bytes, url, 50 * 1024 * 1024, 60
         )
         downloaded = True
         await status.edit_text("📤 فایلەکە ئامادەیە؛ ئێستا بۆ تێلێگرام دەنێردرێت...")
+        stream = io.BytesIO(payload)
+        stream.name = filename
         chat_id = update.effective_chat.id
         try:
-            with open(cached_path, "rb") as stream:
-                if suffix in (".mp3", ".m4a", ".wav", ".ogg", ".flac"):
-                    await context.bot.send_audio(chat_id=chat_id, audio=stream, caption=title[:1024],
-                        title=title[:64], read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30)
-                elif suffix in (".mp4", ".mov", ".m4v"):
-                    await context.bot.send_video(chat_id=chat_id, video=stream, caption=title[:1024],
-                        supports_streaming=True, read_timeout=180, write_timeout=300)
-                elif suffix in (".jpg", ".jpeg", ".png", ".webp"):
-                    await context.bot.send_photo(chat_id=chat_id, photo=stream, caption=title[:1024])
-                else:
-                    await context.bot.send_document(chat_id=chat_id, document=stream, caption=title[:1024],
-                        filename=filename, read_timeout=180, write_timeout=300)
+            if suffix in (".mp3", ".m4a", ".wav", ".ogg", ".flac"):
+                await context.bot.send_audio(
+                    chat_id=chat_id, audio=stream, caption=title[:1024], title=title[:64],
+                    read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
+                )
+            elif suffix in (".mp4", ".mov", ".m4v"):
+                await context.bot.send_video(chat_id=chat_id, video=stream, caption=title[:1024], supports_streaming=True)
+            elif suffix in (".jpg", ".jpeg", ".png", ".webp"):
+                await context.bot.send_photo(chat_id=chat_id, photo=stream, caption=title[:1024])
+            else:
+                await context.bot.send_document(chat_id=chat_id, document=stream, caption=title[:1024], filename=filename)
         except BadRequest as media_error:
+            # Some valid files are rejected by Telegram's media parser; retry as a plain document.
             log.warning("Telegram rejected %s as media; retrying as document: %s", filename, media_error)
-            with open(cached_path, "rb") as stream:
-                await context.bot.send_document(chat_id=chat_id, document=stream, caption=title[:1024],
-                    filename=filename, read_timeout=180, write_timeout=300)
+            stream.seek(0)
+            await context.bot.send_document(
+                chat_id=chat_id, document=stream, caption=title[:1024], filename=filename
+            )
         try:
             await status.delete()
         except Exception:
@@ -1256,16 +1091,8 @@ async def qari_ayah_guide(update, reciter_id, sid, page=0, edit=False):
         "_کاتەکان لە سەرەتای فایلەکەوە بە چرکە ژمێردراون. Telegram ڕێگە نادات بۆت شوێنی پەخشکردنی دەنگ بە شێوەی ڕاستەوخۆ بزانێت؛ ئەم لیستە کاتی هەر ئایەت و دەقی ئەو ئایەتە پیشان دەدات._",
         ""
     ]
-    for ayah, raw_milliseconds in timings:
-        try:
-            milliseconds = float(raw_milliseconds)
-            if not math.isfinite(milliseconds) or milliseconds < 0:
-                continue
-        except (TypeError, ValueError, OverflowError):
-            log.warning("Skipping invalid guide timing: surah=%s ayah=%r time=%r",
-                        sid, ayah, raw_milliseconds)
-            continue
-        seconds = int(milliseconds / 1000)
+    for ayah, milliseconds in timings:
+        seconds = max(0, int(milliseconds)) // 1000
         stamp = f"{seconds // 60:02d}:{seconds % 60:02d}"
         lines.append(f"*{stamp}* — ﴿{ayah}﴾ {verses.get(ayah, '')}")
     nav = []
@@ -1296,27 +1123,29 @@ async def play_qari_surah(update,context,index,sid):
     try:
         # Several users may request audio at once; cap only heavyweight downloads.
         async with LARGE_AUDIO_DOWNLOAD_SEMAPHORE:
-            audio_path = await asyncio.to_thread(
-                download_cached_file, audio_url, 512 * 1024 * 1024, 120
+            audio_data = await asyncio.to_thread(
+                download_cached_bytes, audio_url, 512 * 1024 * 1024, 120
             )
         await status.edit_text("📤 دەنگەکە وەرگیرا؛ ئامادەی ناردنە...")
         chat_id = update.effective_chat.id
         title = f"{surah_name} — {qari_name}"[:64]
         caption = f"📖 سوڕەتی {surah_name}\n🎙️ قاری: {qari_name}"
         max_part_bytes = 40 * 1024 * 1024
-        audio_size = os.path.getsize(audio_path)
-        if audio_size <= max_part_bytes:
-            with open(audio_path, "rb") as audio_file:
-                await context.bot.send_audio(
-                    chat_id=chat_id, audio=audio_file, title=title,
-                    performer=qari_name[:64], caption=caption,
-                    read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
-                )
+        if len(audio_data) <= max_part_bytes:
+            audio_file = io.BytesIO(audio_data)
+            audio_file.name = f"{sid:03d}.mp3"
+            await context.bot.send_audio(
+                chat_id=chat_id, audio=audio_file, title=title,
+                performer=qari_name[:64], caption=caption,
+                read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
+            )
         else:
             if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
                 raise RuntimeError("ffmpeg/ffprobe is unavailable for splitting large MP3")
             with tempfile.TemporaryDirectory(prefix="regay-audio-") as temp_dir:
-                source = str(audio_path)
+                source = os.path.join(temp_dir, f"{sid:03d}-full.mp3")
+                with open(source, "wb") as source_file:
+                    source_file.write(audio_data)
                 probe = subprocess.run(
                     ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                      "-of", "default=noprint_wrappers=1:nokey=1", source],
@@ -1327,7 +1156,7 @@ async def play_qari_surah(update,context,index,sid):
                     raise RuntimeError("FFprobe returned an invalid audio duration")
                 pattern = os.path.join(temp_dir, "part-%03d.mp3")
                 safe_part_bytes = 24 * 1024 * 1024
-                segment_seconds = max(30, int(duration * safe_part_bytes * 0.80 / audio_size))
+                segment_seconds = max(30, int(duration * safe_part_bytes * 0.80 / len(audio_data)))
                 parts = []
                 split_errors = []
                 # Stream-copy first; if a cut is too large or only one part is made,
@@ -1411,125 +1240,6 @@ async def play_qari_surah(update,context,index,sid):
                 reply_markup=ik([[InlineKeyboardButton("🔙 گەڕانەوە بۆ سوڕەتەکان",callback_data=f"qr:pick:{index}")]]))
         except Exception:
             await update.effective_message.reply_text("⚠️ ناردنی دەنگی قورئان سەرکەوتوو نەبوو.")
-
-async def play_mushaf_page_audio(update, context, page):
-    """Send only the recitation audio covering the ayahs printed on one Mushaf page."""
-    uid = update.effective_user.id
-    reciters = [r for r in load_json("dangakan")
-                if isinstance(r, dict) and str(r.get("doxx", "")).lower() == "true" and r.get("url")]
-    selected_id = await asyncio.to_thread(get_qari, uid)
-    item = next((r for r in reciters if str(r.get("id")) == str(selected_id)), None)
-    if item is None:
-        await update.effective_message.reply_text("🎙️ سەرەتا قاریی دڵخوازت لە ڕێکخستن هەڵبژێرە:")
-        return await setup_qari_menu(update)
-    reciter_id = str(item.get("id", ""))
-    timing_path = DATA / "recitation_timings" / f"{reciter_id}.db"
-    if not timing_path.is_file():
-        return await update.effective_message.reply_text("⚠️ کاتی ئایەت بۆ قاریی هەڵبژێردراو بەردەست نییە؛ تکایە قارییەکی تر هەڵبژێرە.")
-    info_path = DATA / "recitation_timings" / "ayah_info.db"
-    with sqlite3.connect(f"file:{info_path}?mode=ro", uri=True) as conn:
-        page_rows = conn.execute(
-            """SELECT surah_id, verse_id, MIN(line_number) AS first_line
-               FROM page_data_line WHERE page_number=?
-               GROUP BY surah_id, verse_id ORDER BY first_line""",
-            (int(page),),
-        ).fetchall()
-    if not page_rows:
-        return await update.effective_message.reply_text("⚠️ زانیاریی ئایەتەکانی ئەم پەڕەیە نەدۆزرایەوە.")
-    # Keep verse ranges separate if a Mushaf page crosses a surah boundary.
-    groups = []
-    for sid, ayah, _line in page_rows:
-        sid, ayah = int(sid), int(ayah)
-        if groups and groups[-1][0] == sid and ayah <= groups[-1][2] + 1:
-            groups[-1][2] = max(groups[-1][2], ayah)
-        else:
-            groups.append([sid, ayah, ayah])
-    qari_name = str(item.get("name_ar") or "قاری").strip()
-    base = str(item.get("url", "")).strip().rstrip("/")
-    if not base.startswith(("https://", "http://")):
-        return await update.effective_message.reply_text("⚠️ لینکی دەنگی قاری نادروستە.")
-    status = await update.effective_message.reply_text(
-        f"⏳ دەنگی پەڕەی {page} بە قاری {qari_name} ئامادە دەکرێت..."
-    )
-    try:
-        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
-            raise RuntimeError("ffmpeg/ffprobe لە سێرڤەر بەردەست نییە")
-        with tempfile.TemporaryDirectory(prefix=f"regay-page-{page}-") as temp_dir:
-            clips = []
-            for number, (sid, first_ayah, last_ayah) in enumerate(groups, 1):
-                audio_url = f"{base}/{sid:03d}.mp3"
-                async with LARGE_AUDIO_DOWNLOAD_SEMAPHORE:
-                    source_path = await asyncio.to_thread(
-                        download_cached_file, audio_url, 512 * 1024 * 1024, 120
-                    )
-                source = str(source_path)
-                with sqlite3.connect(f"file:{timing_path}?mode=ro", uri=True) as conn:
-                    timing_rows = conn.execute(
-                        "SELECT ayah,time FROM timings WHERE sura=? ORDER BY ayah",
-                        (sid,),
-                    ).fetchall()
-                starts = {}
-                for ayah_number, raw_ms in timing_rows:
-                    # Timing databases may store milliseconds as REAL (e.g. 2320.0).
-                    try:
-                        milliseconds = float(raw_ms)
-                        if math.isfinite(milliseconds) and milliseconds >= 0:
-                            starts[int(float(ayah_number))] = milliseconds / 1000.0
-                    except (TypeError, ValueError, OverflowError):
-                        log.warning("Skipping invalid recitation timing: surah=%s ayah=%r time=%r",
-                                    sid, ayah_number, raw_ms)
-                if first_ayah not in starts:
-                    raise RuntimeError(f"کاتی دەستپێکی ئایەتی {first_ayah} بۆ سووڕەتی {sid} نییە")
-                start_seconds = starts[first_ayah]
-                next_starts = [value for ayah, value in starts.items() if ayah > last_ayah]
-                if next_starts:
-                    end_seconds = min(next_starts)
-                else:
-                    probe = subprocess.run(
-                        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                         "-of", "default=noprint_wrappers=1:nokey=1", source],
-                        capture_output=True, text=True, timeout=60, check=True,
-                    )
-                    end_seconds = float(probe.stdout.strip())
-                duration = end_seconds - start_seconds
-                if not math.isfinite(duration) or duration <= 0:
-                    raise RuntimeError("ماوەی دەنگی ئایەتەکان نادروستە")
-                output = os.path.join(temp_dir, f"page-{page}-part-{number}.mp3")
-                subprocess.run(
-                    ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                     "-ss", f"{start_seconds:.3f}", "-i", source, "-t", f"{duration:.3f}",
-                     "-vn", "-c:a", "libmp3lame", "-b:a", "128k", output],
-                    capture_output=True, text=True, timeout=300, check=True,
-                )
-                if not os.path.isfile(output) or os.path.getsize(output) == 0:
-                    raise RuntimeError("بڕینی دەنگی ئەم پەڕەیە سەرکەوتوو نەبوو")
-                clips.append((output, sid, first_ayah, last_ayah))
-            await status.edit_text(f"📤 دەنگی پەڕەی {page} ئامادەیە؛ دەنێردرێت...")
-            for part_number, (clip_path, sid, first_ayah, last_ayah) in enumerate(clips, 1):
-                with db("surat.db") as conn:
-                    surah_row = conn.execute("SELECT name FROM surat WHERE soraid=?", (sid,)).fetchone()
-                surah_name = surah_row[0] if surah_row else f"سووڕەت {sid}"
-                with open(clip_path, "rb") as audio:
-                    await context.bot.send_audio(
-                        chat_id=update.effective_chat.id, audio=audio,
-                        title=f"پەڕە {page} — {surah_name}"[:64],
-                        performer=qari_name[:64],
-                        caption=(f"📖 دەنگی پەڕەی {page}\n"
-                                 f"📚 {surah_name}: ئایەت {first_ayah} تا {last_ayah}\n"
-                                 f"🎙️ قاری: {qari_name}"),
-                        read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
-                    )
-        try:
-            await status.delete()
-        except Exception:
-            pass
-    except Exception as exc:
-        log.exception("Could not create Mushaf page audio for page %s", page)
-        try:
-            await status.edit_text(f"⚠️ ناردنی دەنگی پەڕەکە سەرکەوتوو نەبوو.\n{str(exc)[:300]}")
-        except Exception:
-            pass
-
 
 async def play_default_qari(update, context, sid):
     selected_id = await asyncio.to_thread(get_qari, update.effective_user.id)
@@ -2048,25 +1758,25 @@ async def send_pdf_book(update, context, index, page=0):
     if not url.startswith("https://"):
         return await update.effective_message.reply_text("لینکی فایلەکە دروست نییە.")
     title = str(book.get("name") or f"کتێب {index+1}")
-    status = await update.effective_message.reply_text(
-        f"⏳ فایلەکەی «{title}» ئامادە دەکرێت...\\n📥 وەرگرتنی PDF"
-    )
+    status = await update.effective_message.reply_text(f"⏳ فایلەکەی «{title}» ئامادە دەکرێت...\\n📥 وەرگرتنی PDF")
     try:
-        pdf_path = await asyncio.to_thread(
-            download_cached_file, url, 49 * 1024 * 1024, 60
-        )
-        with open(pdf_path, "rb") as check:
-            if check.read(5) != b"%PDF-":
+        def download():
+            request = urllib.request.Request(url, headers={"User-Agent": "Regay-Islam-Telegram-Bot/1.0"})
+            with urllib.request.urlopen(request, timeout=60) as response:
+                data = response.read(49*1024*1024+1)
+            if not data:
+                raise ValueError("Empty PDF response")
+            if len(data) > 49*1024*1024:
+                raise ValueError("PDF exceeds Telegram bot upload limit")
+            if not data.startswith(b"%PDF"):
                 raise ValueError("URL did not return a PDF file")
+            return data
+        payload = await asyncio.to_thread(download)
         await status.edit_text("✅ کتێبەکە وەرگیرا.\\n📤 ئێستا PDF ـەکە بۆ تێلێگرام دەنێردرێت...")
+        document = io.BytesIO(payload)
         safe_name = "".join(ch for ch in title if ch.isalnum() or ch in " _-")[:70] or "islamic-book"
-        with open(pdf_path, "rb") as document:
-            document.name = safe_name + ".pdf"
-            await context.bot.send_document(
-                chat_id=update.effective_chat.id, document=document,
-                caption=f"📚 {title}\\n✍️ {str(book.get('author') or 'نووسەر دیاری نەکراوە')[:150]}",
-                read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
-            )
+        document.name = safe_name + ".pdf"
+        await context.bot.send_document(chat_id=update.effective_chat.id, document=document, caption=f"📚 {title}\n✍️ {str(book.get('author') or 'نووسەر دیاری نەکراوە')[:150]}")
         await status.delete()
     except Exception:
         log.exception("PDF delivery failed for book index %s", index)
@@ -2118,9 +1828,6 @@ async def handle_text(update,context):
             return await update.effective_message.reply_text("⚠️ ناردنی وەڵامەکە سەرکەوتوو نەبوو.")
     if context.user_data.get("feedback_waiting"):
         return await receive_feedback(update, context, text)
-    # Do not let a pending Mushaf page prompt consume another menu selection.
-    if text in MENU_ITEMS.values() and text != "📖 مصحەف":
-        context.user_data.pop("mushaf_waiting_page", None)
     if context.user_data.pop("mushaf_waiting_page", False):
         if not text.isdigit() or not 1 <= int(text) <= 604:
             context.user_data["mushaf_waiting_page"] = True
@@ -2146,7 +1853,7 @@ async def handle_text(update,context):
         "📿 ناوەکانی خودا":lambda:names_menu(update,0),
         "🎙️ قارییەکان":lambda:show_qari_menu(update,0),
         "📚 هەموو بابەتەکان":lambda:content_menu(update),
-        "🎞️ ڤیدیۆی ئاینی":lambda:firebase_video_profiles_menu(update,context),
+        "🎞️ ڤیدیۆی ئاینی":lambda:firebase_video_profiles_menu(update),
         "🔎 گەڕان":lambda:search_choose(update),
         "⭐ دڵخوازەکان":lambda:show_favorites(update),
         "📍 دوا خوێندنەوە":lambda:show_last_read(update),
@@ -2200,25 +1907,6 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
     if data == "st:city":
         context.user_data["settings_city_flow"] = True
         return await setup_city_menu(update, 0, True)
-    if data == "st:tafsir":
-        context.user_data.pop("tafsir_return_to_ayah", None)
-        return await show_tafsir_settings(update)
-    if data.startswith("q:tc:"):
-        _, _, sid, ayah = data.split(":")
-        context.user_data["tafsir_return_to_ayah"] = (int(sid), int(ayah))
-        return await show_tafsir_settings(update)
-    if data == "st:settings":
-        return await show_settings(update, context)
-    if data.startswith("st:tafsir:pick:"):
-        selected_tafsir = int(data.split(":")[3])
-        await asyncio.to_thread(set_preferred_tafsir, q.from_user.id, selected_tafsir)
-        return_to_ayah = context.user_data.pop("tafsir_return_to_ayah", None)
-        if return_to_ayah:
-            return await show_tafsir(update, return_to_ayah[0], return_to_ayah[1])
-        return await q.edit_message_text(
-            f"✅ تەفسیرەکەت گۆڕدرا بۆ: {['تەفسیری ڕێبەر','تەفسیری ڕامان','پوختەی تەفسیر','تەفسیری ئاسان','تەفسیری سەناهی','تەفسیری هەژار','تەفسیری ژین','تەفسیری مایسەر','تەفسیری ڕۆشن','تەفسیری تەوحید'][selected_tafsir]}",
-            reply_markup=ik([[InlineKeyboardButton("⚙️ گەڕانەوە بۆ ڕێکخستن", callback_data="st:settings")]])
-        )
     if data.startswith("st:notify:"):
         enabled = data.endswith(":on")
         await asyncio.to_thread(set_prayer_notifications, q.from_user.id, enabled)
@@ -2277,8 +1965,6 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
     if data == "mo:done":
         await q.edit_message_text("✅ ڕیزبەندی مێنیوەکەت پاشەکەوت کرا.")
         return await q.message.reply_text("مێنیوی نوێت ئامادەیە:", reply_markup=main_keyboard(q.from_user.id))
-    if data.startswith("qpa:"):
-        return await play_mushaf_page_audio(update, context, int(data.split(":")[1]))
     if data.startswith("qaudio:"):
         return await play_default_qari(update, context, int(data.split(":")[1]))
     if data.startswith("qg:"):
@@ -2433,18 +2119,6 @@ async def callback(update: Update,context: ContextTypes.DEFAULT_TYPE):
             _,_,sid,off=data.split(":"); return await show_ayahs(update,int(sid),int(off),True)
         if data.startswith("q:t:"):
             _,_,sid,ay=data.split(":"); return await show_tafsir(update,int(sid),int(ay))
-        if data.startswith("q:tp:") or data.startswith("q:tn:"):
-            _, direction, sid, ay = data.split(":")
-            sid, ay = int(sid), int(ay)
-            with db("surat.db") as conn:
-                total_row = conn.execute("SELECT aya FROM surat WHERE soraid=?", (sid,)).fetchone()
-            total = int(total_row[0]) if total_row else ay
-            next_ayah = ay - 1 if direction == "tp" else ay + 1
-            if next_ayah < 1 or next_ayah > total:
-                return await q.answer("ئەمە سنووری سوڕەتەکەیە.", show_alert=True)
-            return await show_tafsir(update, sid, next_ayah)
-        if data.startswith("q:ts:"):
-            return await show_surah_tafsir(update, int(data.split(":")[2]))
         if data.startswith("q:tf:"):
             _,_,sid,ay,choice=data.split(":"); return await show_tafsir(update,int(sid),int(ay),int(choice))
         if data.startswith("pcl:"):
@@ -2670,7 +2344,7 @@ async def prayer_notification_loop(app):
                             continue
                         await app.bot.send_message(
                             chat_id=uid,
-                            text=f"🕌 ئێستا کاتی بانگی *{prayer_name}* ـە ({prayer_hm}).\n\nخوا نوێژ و دوعاکانتان قبوڵ بکات. 🤲",
+                            text=f"🕌 ئێستا کاتی بانگی *{prayer_name}* ـە.\n\nخوا نوێژ و دوعاکانتان قبوڵ بکات. 🤲",
                             parse_mode=ParseMode.MARKDOWN,
                         )
                     except Exception:
@@ -2742,7 +2416,7 @@ def main():
         pool_timeout=30,
     )
     app=(Application.builder().token(TOKEN).request(telegram_request)
-         .post_init(post_init).concurrent_updates(UserSerialUpdateProcessor(64)).build())
+         .post_init(post_init).concurrent_updates(64).build())
     app.add_handler(MessageHandler(filters.ALL, membership_gate), group=-2)
     app.add_handler(CallbackQueryHandler(membership_gate), group=-2)
     app.add_handler(MessageHandler(filters.ALL, block_banned), group=-1)

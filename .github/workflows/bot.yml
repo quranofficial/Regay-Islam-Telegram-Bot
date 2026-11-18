@@ -25,23 +25,10 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      - name: Check media tools
-        id: media-tools
-        run: |
-          if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
-            echo "FFmpeg and FFprobe are already available."
-            ffmpeg -version | head -n 1
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "FFmpeg tools are missing; installation is required."
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Install media tools
-        if: steps.media-tools.outputs.available != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          sudo apt-get install -y ffmpeg
 
       - name: Install dependencies
         run: pip install -r requirements.txt
