@@ -925,7 +925,8 @@ async def prayer_times(update, city, edit=False):
         r=c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name=?",(city,)).fetchone()
         if not r:
             await update.effective_message.reply_text("کاتی بانگ بۆ ئەم شارە لە داتابەیسدا نییە."); return
-        today=datetime.now(TZ).strftime("%m-%d")
+        now = datetime.now(TZ)
+        today=now.strftime("%m-%d")
         row=c.execute(f'SELECT D,bayani,xorhalatn,niwaro,asr,eywara,esha FROM "{city}" WHERE D=?',(today,)).fetchone()
         cityname=city_display
     if not row:
