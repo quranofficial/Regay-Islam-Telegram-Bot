@@ -27,6 +27,14 @@ class UserSerialUpdateProcessor(BaseUpdateProcessor):
         super().__init__(max_concurrent_updates)
         self._user_locks = {}
 
+    async def initialize(self):
+        """Initialize the update processor."""
+        return None
+
+    async def shutdown(self):
+        """Release per-user locks when the application shuts down."""
+        self._user_locks.clear()
+
     async def do_process_update(self, update, coroutine):
         user = update.effective_user
         if user is None:
