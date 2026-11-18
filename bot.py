@@ -855,9 +855,10 @@ async def show_tafsir(update,sid,ayah,selected=None):
     ]
     fields = r[2:]
     surah_title = str(r[0] or "").strip()
-    if not surah_title.startswith("سوڕەتی "):
-        surah_title = "سوڕەتی " + surah_title
-    heading = f"📖 {surah_title}، ئایەتی {ayah}"
+    # Database names may already include the Sorani prefix more than once.
+    while surah_title.startswith("سوڕەتی"):
+        surah_title = surah_title[len("سوڕەتی"):].lstrip(" :،ـ-")
+    heading = f"📖 سوڕەتی {surah_title}، ئایەتی {eastern_digits(ayah)}"
     buttons = []
     if selected == -1:
         sections = [f"*{label}*\n{str(value)[:850]}" for (label, _), value in zip(options, fields)
