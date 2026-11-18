@@ -1327,13 +1327,16 @@ async def play_qari_surah(update,context,index,sid):
     try:
         # Several users may request audio at once; cap only heavyweight downloads.
         async with LARGE_AUDIO_DOWNLOAD_SEMAPHORE:
-            audio_path = await asyncio.to_thread(\n                download_cached_file, audio_url, 512 * 1024 * 1024, 120\n            )
+            audio_path = await asyncio.to_thread(
+                download_cached_file, audio_url, 512 * 1024 * 1024, 120
+            )
         await status.edit_text("📤 دەنگەکە وەرگیرا؛ ئامادەی ناردنە...")
         chat_id = update.effective_chat.id
         title = f"{surah_name} — {qari_name}"[:64]
         caption = f"📖 سوڕەتی {surah_name}\n🎙️ قاری: {qari_name}"
         max_part_bytes = 40 * 1024 * 1024
-        audio_size = os.path.getsize(audio_path)\n        if audio_size <= max_part_bytes:
+        audio_size = os.path.getsize(audio_path)
+        if audio_size <= max_part_bytes:
             with open(audio_path, "rb") as audio_file:\n                await context.bot.send_audio(\n                    chat_id=chat_id, audio=audio_file, title=title,\n                    performer=qari_name[:64], caption=caption,\n                    read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,\n                )
         else:
             if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
