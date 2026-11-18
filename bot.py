@@ -1223,8 +1223,16 @@ async def qari_ayah_guide(update, reciter_id, sid, page=0, edit=False):
         "_کاتەکان لە سەرەتای فایلەکەوە بە چرکە ژمێردراون. Telegram ڕێگە نادات بۆت شوێنی پەخشکردنی دەنگ بە شێوەی ڕاستەوخۆ بزانێت؛ ئەم لیستە کاتی هەر ئایەت و دەقی ئەو ئایەتە پیشان دەدات._",
         ""
     ]
-    for ayah, milliseconds in timings:
-        seconds = max(0, int(milliseconds)) // 1000
+    for ayah, raw_milliseconds in timings:
+        try:
+            milliseconds = float(raw_milliseconds)
+            if not math.isfinite(milliseconds) or milliseconds < 0:
+                continue
+        except (TypeError, ValueError, OverflowError):
+            log.warning("Skipping invalid guide timing: surah=%s ayah=%r time=%r",
+                        sid, ayah, raw_milliseconds)
+            continue
+        seconds = int(milliseconds / 1000)
         stamp = f"{seconds // 60:02d}:{seconds % 60:02d}"
         lines.append(f"*{stamp}* — ﴿{ayah}﴾ {verses.get(ayah, '')}")
     nav = []
