@@ -206,39 +206,8 @@ def download_cached_file(url, max_bytes, timeout):
 
 
 def download_cached_bytes(url, max_bytes, timeout):
-    """Reuse recently downloaded media during this bot process to avoid repeated waits."""
-    cache_dir = Path("/tmp/regay-islam-media-cache")
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / hashlib.sha256(url.encode("utf-8")).hexdigest()
-    if cache_path.is_file():
-        try:
-            cached = cache_path.read_bytes()
-            if cached and len(cached) <= max_bytes:
-                return cached
-            cache_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-    data = download_remote_bytes(url, max_bytes, timeout)
-    temp_path = cache_path.with_suffix(f".{os.getpid()}.tmp")
-    try:
-        temp_path.write_bytes(data)
-        os.replace(temp_path, cache_path)
-        # Bound cache size so repeated media requests cannot fill the runner disk.
-        files = sorted(
-            (p for p in cache_dir.iterdir() if p.is_file() and not p.name.endswith(".tmp")),
-            key=lambda p: p.stat().st_mtime
-        )
-        total = sum(p.stat().st_size for p in files)
-        for old in files:
-            if total <= 256 * 1024 * 1024:
-                break
-            if old != cache_path:
-                size = old.stat().st_size
-                old.unlink(missing_ok=True)
-                total -= size
-    except OSError:
-        temp_path.unlink(missing_ok=True)
-    return data
+    """Compatibility wrapper for callers that still need bytes in memory."""
+    return download_cached_file(url, max_bytes, timeout).read_bytes()
 
 
 _firebase_cache = {}
