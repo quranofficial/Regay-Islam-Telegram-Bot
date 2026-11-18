@@ -158,6 +158,21 @@ def set_menu_order(uid: int, order: list[str]):
     _upsert("bot_users", {"user_id": uid, "menu_order": order})
 
 
+def get_preferred_tafsir(uid: int) -> int:
+    rows = _request("GET", "bot_users", params={"select": "preferred_tafsir", "user_id": f"eq.{uid}", "limit": "1"}) or []
+    try:
+        value = int(rows[0].get("preferred_tafsir", 0)) if rows else 0
+    except (TypeError, ValueError):
+        value = 0
+    return value if 0 <= value <= 9 else 0
+
+
+def set_preferred_tafsir(uid: int, index: int):
+    if not 0 <= int(index) <= 9:
+        raise ValueError("Invalid tafsir selection")
+    _upsert("bot_users", {"user_id": uid, "preferred_tafsir": int(index)})
+
+
 def init_user_features():
     # Tables are provisioned once in Supabase; never create them at runtime.
     return None
