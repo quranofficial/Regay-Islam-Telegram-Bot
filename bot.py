@@ -1306,7 +1306,12 @@ async def play_qari_surah(update,context,index,sid):
         max_part_bytes = 40 * 1024 * 1024
         audio_size = os.path.getsize(audio_path)
         if audio_size <= max_part_bytes:
-            with open(audio_path, "rb") as audio_file:\n                await context.bot.send_audio(\n                    chat_id=chat_id, audio=audio_file, title=title,\n                    performer=qari_name[:64], caption=caption,\n                    read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,\n                )
+            with open(audio_path, "rb") as audio_file:
+                await context.bot.send_audio(
+                    chat_id=chat_id, audio=audio_file, title=title,
+                    performer=qari_name[:64], caption=caption,
+                    read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
+                )
         else:
             if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
                 raise RuntimeError("ffmpeg/ffprobe is unavailable for splitting large MP3")
