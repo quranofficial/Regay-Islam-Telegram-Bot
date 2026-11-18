@@ -2426,6 +2426,6 @@ def main():
     app.add_handler(CommandHandler("favorites",show_favorites)); app.add_handler(CommandHandler("lastread",show_last_read)); app.add_handler(CommandHandler("settings",show_settings))
     app.add_handler(CallbackQueryHandler(callback)); app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text)); app.add_error_handler(error_handler)
     log.info("ڕێگای ئیسلام bot starting")
-    app.run_polling(allowed_updates=Update.ALL_TYPES,drop_pending_updates=False)
+    app.run_polling(allowed_updates=Update.ALL_TYPES,drop_pending_updates=False,bootstrap_retries=-1)
 
 if __name__ == "__main__": main()
