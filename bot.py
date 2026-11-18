@@ -835,21 +835,57 @@ def dual_date_lines(value):
     return f"📅 زاینی: {value:%Y-%m-%d}\n🌙 هەجری: {hijri_date_for(value)}"
 
 
+def next_prayer_countdown(today_row, tomorrow_row, now):
+    # Sunrise is displayed in the timetable but is not one of the five prayers.
+    prayer_columns = ((1, "بەیانی"), (3, "نیوەڕۆ"), (4, "عەسر"), (5, "ئێوارە"), (6, "عیشا"))
+    candidates = []
+    for row, day_offset in ((today_row, 0), (tomorrow_row, 1)):
+        if not row:
+            continue
+        prayer_date = (now + timedelta(days=day_offset)).date()
+        for column, label in prayer_columns:
+            raw = str(row[column] or "").strip()[:5]
+            try:
+                clock = datetime.strptime(raw, "%H:%M").time()
+            except ValueError:
+                continue
+            at = datetime.combine(prayer_date, clock, tzinfo=TZ)
+            if at > now:
+                candidates.append((at, label))
+    if not candidates:
+        return "⏳ کاتی بانگی داهاتوو لە خشتەدا بەردەست نییە."
+    at, label = min(candidates, key=lambda item: item[0])
+    remaining = max(0, int((at - now).total_seconds()))
+    hours, rem = divmod(remaining, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if hours:
+        left = f"{hours} کاتژمێر و {minutes} خولەک"
+    elif minutes:
+        left = f"{minutes} خولەک و {seconds} چرکە"
+    else:
+        left = f"{seconds} چرکە"
+    return f"⏭️ *بانگی داهاتوو: {label} — {at:%H:%M}*\n⏳ ماوە: *{left}*"
+
+
 async def prayer_times(update, city, edit=False):
     city_display=city_display_name(city)
+    now = datetime.now(TZ)
     with db("katenwezh62.db") as c:
         r=c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name=?",(city,)).fetchone()
         if not r:
             await update.effective_message.reply_text("کاتی بانگ بۆ ئەم شارە لە داتابەیسدا نییە."); return
-        today=datetime.now(TZ).strftime("%m-%d")
+        today=now.strftime("%m-%d")
+        tomorrow=(now.date()+timedelta(days=1)).strftime("%m-%d")
         row=c.execute(f'SELECT D,bayani,xorhalatn,niwaro,asr,eywara,esha FROM "{city}" WHERE D=?',(today,)).fetchone()
+        tomorrow_row=c.execute(f'SELECT D,bayani,xorhalatn,niwaro,asr,eywara,esha FROM "{city}" WHERE D=?',(tomorrow,)).fetchone()
         cityname=city_display
     if not row:
         msg="کاتی ئەم ڕۆژە لە خشتەی سەرچاوەدا نەدۆزرایەوە."
     else:
         labels=["بەیانی","خۆرهەڵاتن","نیوەڕۆ","عەسر","ئێوارە","عیشا"]
-        msg=f"🕌 *کاتەکانی بانگ — {cityname}*\n{dual_date_lines(datetime.now(TZ).date())}\n\n"
+        msg=f"🕌 *کاتەکانی بانگ — {cityname}*\n{dual_date_lines(now.date())}\n\n"
         msg+='\n'.join(f"• {a}: *{b}*" for a,b in zip(labels,row[1:]))
+        msg += "\n\n" + next_prayer_countdown(row, tomorrow_row, now)
         msg+="\n\n_کاتەکان وەک خشتەی ناو ئەپی ڕێگای ئیسلامن؛ پێش بەکارهێنان لەگەڵ کاتی مزگەوتی ناوچەکەت بەراوردیان بکە._"
     markup=ik([[InlineKeyboardButton("🔄 گۆڕینی شار",callback_data="pcl:prayer:0")]])
     if edit: await update.callback_query.edit_message_text(msg,reply_markup=markup,parse_mode=ParseMode.MARKDOWN)
