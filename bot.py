@@ -2048,25 +2048,25 @@ async def send_pdf_book(update, context, index, page=0):
     if not url.startswith("https://"):
         return await update.effective_message.reply_text("لینکی فایلەکە دروست نییە.")
     title = str(book.get("name") or f"کتێب {index+1}")
-    status = await update.effective_message.reply_text(f"⏳ فایلەکەی «{title}» ئامادە دەکرێت...\\n📥 وەرگرتنی PDF")
+    status = await update.effective_message.reply_text(
+        f"⏳ فایلەکەی «{title}» ئامادە دەکرێت...\\n📥 وەرگرتنی PDF"
+    )
     try:
-        def download():
-            request = urllib.request.Request(url, headers={"User-Agent": "Regay-Islam-Telegram-Bot/1.0"})
-            with urllib.request.urlopen(request, timeout=60) as response:
-                data = response.read(49*1024*1024+1)
-            if not data:
-                raise ValueError("Empty PDF response")
-            if len(data) > 49*1024*1024:
-                raise ValueError("PDF exceeds Telegram bot upload limit")
-            if not data.startswith(b"%PDF"):
+        pdf_path = await asyncio.to_thread(
+            download_cached_file, url, 49 * 1024 * 1024, 60
+        )
+        with open(pdf_path, "rb") as check:
+            if check.read(5) != b"%PDF-":
                 raise ValueError("URL did not return a PDF file")
-            return data
-        payload = await asyncio.to_thread(download)
         await status.edit_text("✅ کتێبەکە وەرگیرا.\\n📤 ئێستا PDF ـەکە بۆ تێلێگرام دەنێردرێت...")
-        document = io.BytesIO(payload)
         safe_name = "".join(ch for ch in title if ch.isalnum() or ch in " _-")[:70] or "islamic-book"
-        document.name = safe_name + ".pdf"
-        await context.bot.send_document(chat_id=update.effective_chat.id, document=document, caption=f"📚 {title}\n✍️ {str(book.get('author') or 'نووسەر دیاری نەکراوە')[:150]}")
+        with open(pdf_path, "rb") as document:
+            document.name = safe_name + ".pdf"
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id, document=document,
+                caption=f"📚 {title}\\n✍️ {str(book.get('author') or 'نووسەر دیاری نەکراوە')[:150]}",
+                read_timeout=180, write_timeout=300, connect_timeout=30, pool_timeout=30,
+            )
         await status.delete()
     except Exception:
         log.exception("PDF delivery failed for book index %s", index)
