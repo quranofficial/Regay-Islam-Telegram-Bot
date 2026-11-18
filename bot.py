@@ -10,7 +10,7 @@ from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardB
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.request import HTTPXRequest
-from telegram.ext import Application, ApplicationHandlerStop, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, ApplicationHandlerStop, BaseUpdateProcessor, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from supabase_store import (is_configured, save_user, get_city, set_city, get_qari, set_qari, is_setup_completed, set_setup_completed, save_feedback, touch_runtime_heartbeat, get_prayer_notifications, set_prayer_notifications, list_prayer_notification_users, claim_prayer_notification, init_user_features, save_last_read, add_favorite, remove_favorite, list_favorites, get_last_read, get_tasbih, change_tasbih, reset_tasbih, get_user_count, list_users, get_admin_stats, is_banned, ban_user, unban_user, get_tasbih_zikr, set_tasbih_zikr, get_menu_order, set_menu_order, get_preferred_tafsir, set_preferred_tafsir)
 
 ROOT = Path(__file__).resolve().parent
@@ -20,6 +20,22 @@ TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("regay_islam")
+
+# Process each user's updates in order while keeping different users concurrent.
+class UserSerialUpdateProcessor(BaseUpdateProcessor):
+    def __init__(self, max_concurrent_updates=64):
+        super().__init__(max_concurrent_updates)
+        self._user_locks = {}
+
+    async def do_process_update(self, update, coroutine):
+        user = update.effective_user
+        if user is None:
+            await coroutine
+            return
+        lock = self._user_locks.setdefault(user.id, asyncio.Lock())
+        async with lock:
+            await coroutine
+
 
 # Protect memory and bandwidth while allowing normal bot updates to run concurrently.
 LARGE_AUDIO_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
@@ -1407,7 +1423,16 @@ async def play_mushaf_page_audio(update, context, page):
                             "SELECT ayah,time FROM timings WHERE sura=? ORDER BY ayah",
                             (sid,),
                         ).fetchall()
-                    starts = {int(a): max(0, int(ms)) / 1000.0 for a, ms in timing_rows}
+                    starts = {}
+                    for ayah_number, raw_ms in timing_rows:
+                        # Timing databases may store milliseconds as REAL (e.g. 2320.0).
+                        try:
+                            milliseconds = float(raw_ms)
+                            if math.isfinite(milliseconds) and milliseconds >= 0:
+                                starts[int(float(ayah_number))] = milliseconds / 1000.0
+                        except (TypeError, ValueError, OverflowError):
+                            log.warning("Skipping invalid recitation timing: surah=%s ayah=%r time=%r",
+                                        sid, ayah_number, raw_ms)
                     if first_ayah not in starts:
                         raise RuntimeError(f"کاتی دەستپێکی ئایەتی {first_ayah} بۆ سووڕەتی {sid} نییە")
                     start_seconds = starts[first_ayah]
@@ -2672,7 +2697,7 @@ def main():
         pool_timeout=30,
     )
     app=(Application.builder().token(TOKEN).request(telegram_request)
-         .post_init(post_init).concurrent_updates(64).build())
+         .post_init(post_init).concurrent_updates(UserSerialUpdateProcessor(64)).build())
     app.add_handler(MessageHandler(filters.ALL, membership_gate), group=-2)
     app.add_handler(CallbackQueryHandler(membership_gate), group=-2)
     app.add_handler(MessageHandler(filters.ALL, block_banned), group=-1)
